@@ -3,6 +3,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { colorForBranch } from "../lib/colors";
 import { computeLanes } from "../lib/lanes";
 import type { BranchInfo, CommitSummary } from "../types";
+import { openDiff } from "../lib/ipc";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
 import { LaneGraph } from "./LaneGraph";
@@ -178,7 +179,20 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
             {expandedHash === c.hash && (
               <li className="timeline-expansion" onClick={(e) => e.stopPropagation()}>
                 <CommitDetail commit={c} />
-                <ChangedFiles repoPath={c.repoPath} hash={c.hash} />
+                <ChangedFiles
+                  repoPath={c.repoPath}
+                  hash={c.hash}
+                  onOpenDiff={(f) => {
+                    void openDiff(
+                      c.repoPath,
+                      c.repoName,
+                      c.hash,
+                      c.shortHash,
+                      c.summary,
+                      f.path,
+                    );
+                  }}
+                />
               </li>
             )}
           </Fragment>

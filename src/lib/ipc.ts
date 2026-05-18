@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   BranchInfo,
   ChangedFile,
+  CommitFileBlobs,
   CommitSummary,
   Repo,
   ScanComplete,
@@ -58,6 +59,59 @@ export async function changedFiles(
   hash: string,
 ): Promise<ChangedFile[]> {
   return invoke<ChangedFile[]>("changed_files", { repoPath, hash });
+}
+
+export async function fileDiff(
+  repoPath: string,
+  hash: string,
+  filePath: string,
+): Promise<string> {
+  return invoke<string>("file_diff", { repoPath, hash, filePath });
+}
+
+export async function commitFileBlobs(
+  repoPath: string,
+  hash: string,
+  filePath: string,
+  oldPath: string | null,
+): Promise<CommitFileBlobs> {
+  return invoke<CommitFileBlobs>("commit_file_blobs", {
+    repoPath,
+    hash,
+    filePath,
+    oldPath,
+  });
+}
+
+export async function openDiff(
+  repoPath: string,
+  repoName: string,
+  hash: string,
+  shortHash: string,
+  summary: string,
+  filePath: string,
+): Promise<void> {
+  await invoke("open_diff", {
+    repoPath,
+    repoName,
+    hash,
+    shortHash,
+    summary,
+    filePath,
+  });
+}
+
+export interface DiffOpenPayload {
+  repoPath: string;
+  repoName: string;
+  hash: string;
+  shortHash: string;
+  summary: string;
+  filePath: string;
+}
+
+export async function takePendingDiffOpen(): Promise<DiffOpenPayload | null> {
+  return invoke<DiffOpenPayload | null>("take_pending_diff_open");
 }
 
 export async function getPinnedRepos(): Promise<string[]> {

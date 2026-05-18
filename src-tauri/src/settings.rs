@@ -10,6 +10,18 @@ pub struct Settings {
     pub panel_position: Option<PanelPosition>,
     #[serde(default)]
     pub pinned_repos: Vec<String>,
+    #[serde(default)]
+    pub diff_window: Option<DiffWindowState>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+pub struct DiffWindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -68,4 +80,16 @@ pub fn save_pinned_repos(app: &AppHandle, pinned: Vec<String>) {
     if let Err(e) = save(app, &s) {
         eprintln!("settings: failed to persist pinned_repos: {e:#}");
     }
+}
+
+pub fn save_diff_window(app: &AppHandle, state: DiffWindowState) {
+    let mut s = load(app);
+    s.diff_window = Some(state);
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist diff_window: {e:#}");
+    }
+}
+
+pub fn save_replace(app: &AppHandle, settings: &Settings) -> Result<()> {
+    save(app, settings)
 }

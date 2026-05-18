@@ -2,7 +2,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{cache, discovery, git, settings};
 
@@ -129,6 +129,208 @@ pub async fn changed_files(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn commit_file_blobs(
+    repo_path: String,
+    hash: String,
+    file_path: String,
+    old_path: Option<String>,
+) -> Result<git::CommitFileBlobs, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::commit_file_blobs(
+            Path::new(&repo_path),
+            &hash,
+            &file_path,
+            old_path.as_deref(),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+pub async fn file_diff(
+    app: AppHandle,
+    repo_path: String,
+    hash: String,
+    file_path: String,
+) -> Result<String, String> {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        // 1. Cache hit?
+        if let Ok(conn) = cache::open(&app) {
+            if let Ok(Some(text)) = cache::get_diff(&conn, &repo_path, &hash, &file_path) {
+                return Ok(text);
+            }
+        }
+        // 2. Compute, persist, return.
+        let text = git::file_diff(Path::new(&repo_path), &hash, &file_path)
+            .map_err(|e| e.to_string())?;
+        if let Ok(conn) = cache::open(&app) {
+            let _ = cache::put_diff(&conn, &repo_path, &hash, &file_path, &text);
+        }
+        Ok(text)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffOpenPayload {
+    pub repo_path: String,
+    pub repo_name: String,
+    pub hash: String,
+    pub short_hash: String,
+    pub summary: String,
+    pub file_path: String,
+}
+
+/// Tauri-managed slot: the diff window pulls this on mount, then we rely on
+/// the "diff://open" event for subsequent file picks while it's already up.
+pub type PendingDiff = std::sync::Mutex<Option<DiffOpenPayload>>;
+
+/// Peek (not take) the latest payload. The state holds whatever was passed
+/// to open_diff most recently; the diff window calls this on every mount
+/// to seed its UI. React StrictMode in dev mounts useEffect twice, so a
+/// destructive `take()` here would lose the payload on the second mount.
+#[tauri::command]
+pub fn take_pending_diff_open(
+    state: tauri::State<'_, PendingDiff>,
+) -> Option<DiffOpenPayload> {
+    state.lock().ok().and_then(|s| s.clone())
+}
+
+#[tauri::command]
+pub async fn open_diff(
+    app: AppHandle,
+    repo_path: String,
+    repo_name: String,
+    hash: String,
+    short_hash: String,
+    summary: String,
+    file_path: String,
+) -> Result<(), String> {
+    let payload = DiffOpenPayload {
+        repo_path: repo_path.clone(),
+        repo_name,
+        hash: hash.clone(),
+        short_hash,
+        summary,
+        file_path: file_path.clone(),
+    };
+    eprintln!("open_diff invoked: repo={repo_path} hash={hash} file={file_path}");
+
+    if let Some(state) = app.try_state::<PendingDiff>() {
+        if let Ok(mut s) = state.lock() {
+            *s = Some(payload.clone());
+        }
+    }
+
+    if let Some(diff) = app.get_webview_window("diff") {
+        eprintln!("open_diff: existing window, show + focus + emit");
+        diff.show().map_err(|e| {
+            eprintln!("open_diff: show failed: {e}");
+            e.to_string()
+        })?;
+        diff.set_focus().map_err(|e| {
+            eprintln!("open_diff: focus failed: {e}");
+            e.to_string()
+        })?;
+        diff.unminimize().ok();
+        app.emit_to("diff", "diff://open", payload)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    eprintln!("open_diff: building new diff window");
+    let saved = settings::load(&app).diff_window;
+    let (init_w, init_h) = match saved {
+        Some(s) if monitor_can_contain(&app, s.x, s.y, s.w, s.h) => {
+            (s.w as f64, s.h as f64)
+        }
+        _ => default_diff_size(&app),
+    };
+
+    let mut builder = tauri::WebviewWindowBuilder::new(
+        &app,
+        "diff",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("gitwink diff")
+    .inner_size(init_w, init_h)
+    .resizable(true)
+    .decorations(true)
+    .skip_taskbar(false)
+    .always_on_top(false)
+    .visible(true);
+
+    if let Some(s) = saved {
+        if monitor_can_contain(&app, s.x, s.y, s.w, s.h) {
+            builder = builder.position(s.x as f64, s.y as f64);
+        }
+    }
+
+    let window = match builder.build() {
+        Ok(w) => {
+            eprintln!("open_diff: window built ok");
+            w
+        }
+        Err(e) => {
+            eprintln!("open_diff: window build FAILED: {e:#}");
+            return Err(e.to_string());
+        }
+    };
+
+    if saved.map(|s| s.maximized).unwrap_or(false) {
+        let _ = window.maximize();
+    }
+
+    Ok(())
+}
+
+/// Pick a sensible default diff-window size based on the user's primary
+/// monitor — ~70% of its dimensions, clamped to [800x600 .. 1400x900] so
+/// it doesn't sprawl across multiple monitors on the first open.
+fn default_diff_size(app: &AppHandle) -> (f64, f64) {
+    const MIN_W: f64 = 800.0;
+    const MIN_H: f64 = 600.0;
+    const MAX_W: f64 = 1400.0;
+    const MAX_H: f64 = 900.0;
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let logical_w = size.width as f64 / scale;
+        let logical_h = size.height as f64 / scale;
+        let w = (logical_w * 0.70).clamp(MIN_W, MAX_W);
+        let h = (logical_h * 0.70).clamp(MIN_H, MAX_H);
+        return (w, h);
+    }
+    (1100.0, 750.0)
+}
+
+/// Sanity-check a saved (x, y, w, h) against the current monitor layout —
+/// when a monitor is unplugged the saved coords can be in no-mans-land and
+/// the window would open invisible.
+fn monitor_can_contain(app: &AppHandle, x: i32, y: i32, w: u32, h: u32) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return false;
+    };
+    const VISIBLE_PAD: i32 = 80;
+    let panel_x2 = x + w as i32;
+    let panel_y2 = y + h as i32;
+    monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        let mx2 = mp.x + ms.width as i32;
+        let my2 = mp.y + ms.height as i32;
+        let overlap_x = panel_x2.min(mx2) - x.max(mp.x);
+        let overlap_y = panel_y2.min(my2) - y.max(mp.y);
+        overlap_x >= VISIBLE_PAD && overlap_y >= VISIBLE_PAD
+    })
 }
 
 #[tauri::command]

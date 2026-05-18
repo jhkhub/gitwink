@@ -74,14 +74,45 @@ export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
               )}
               {dir && <span className="changed-file-dir">{dir}</span>}
               <span className="changed-file-name">{name}</span>
+              {f.isBinary && (
+                <span className="changed-file-bin" title="Binary file">
+                  bin
+                </span>
+              )}
             </span>
             <span className="changed-file-stat">
-              <span className="changed-file-plus">+{f.insertions}</span>
-              <span className="changed-file-minus">−{f.deletions}</span>
+              {f.isBinary ? (
+                <span className="changed-file-size">
+                  {formatSizeDelta(f.oldSize, f.newSize)}
+                </span>
+              ) : (
+                <>
+                  <span className="changed-file-plus">+{f.insertions}</span>
+                  <span className="changed-file-minus">−{f.deletions}</span>
+                </>
+              )}
             </span>
           </div>
         );
       })}
     </div>
   );
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+function formatSizeDelta(
+  oldSize: number | null,
+  newSize: number | null,
+): string {
+  if (oldSize == null && newSize != null) return `+${formatSize(newSize)}`;
+  if (newSize == null && oldSize != null) return `−${formatSize(oldSize)}`;
+  if (oldSize != null && newSize != null) {
+    return `${formatSize(oldSize)} → ${formatSize(newSize)}`;
+  }
+  return "—";
 }

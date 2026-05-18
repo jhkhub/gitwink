@@ -68,4 +68,14 @@ export interface ChangedFile {
   insertions: number;
   deletions: number;
   status: ChangedFileStatus;
+  isBinary: boolean;
+  oldSize: number | null;
+  newSize: number | null;
+}
+
+export interface CommitFileBlobs {
+  oldBase64: string | null;
+  newBase64: string | null;
+  extension: string;
+  isLfs: boolean;
 }

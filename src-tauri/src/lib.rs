@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tauri::{Manager, WindowEvent};
+use tauri::{Listener, Manager, WindowEvent};
 
 mod cache;
 mod commands;
@@ -26,6 +26,8 @@ pub fn run() {
                 app.set_activation_policy(ActivationPolicy::Accessory);
             }
 
+            app.manage(commands::PendingDiff::default());
+
             tray::setup(app)?;
 
             // Best-effort LRU GC of the diff cache on startup. Off the main
@@ -35,6 +37,85 @@ pub fn run() {
                 if let Ok(mut conn) = cache::open(&gc_handle) {
                     let _ = cache::gc_diffs(&mut conn, cache::DIFF_CACHE_MAX_BYTES);
                 }
+            });
+
+            // Wire the diff window's persist + Esc-hide behaviour the moment
+            // it shows up (it's lazily built by open_diff).
+            let diff_handle = app.handle().clone();
+            let app_for_listener = app.handle().clone();
+            app_for_listener.listen("tauri://window-created", move |event| {
+                let payload = event.payload();
+                if !payload.contains("\"label\":\"diff\"") {
+                    return;
+                }
+                let Some(diff) = diff_handle.get_webview_window("diff") else {
+                    return;
+                };
+                let move_gen = Arc::new(AtomicU64::new(0));
+                let resize_gen = Arc::new(AtomicU64::new(0));
+                let handle = diff_handle.clone();
+                diff.on_window_event(move |evt| match evt {
+                    WindowEvent::CloseRequested { api, .. } => {
+                        api.prevent_close();
+                        if let Some(w) = handle.get_webview_window("diff") {
+                            let _ = w.hide();
+                        }
+                    }
+                    WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                        let stamp = if matches!(evt, WindowEvent::Moved(_)) {
+                            move_gen.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+                        } else {
+                            resize_gen.fetch_add(1, Ordering::SeqCst).wrapping_add(1)
+                        };
+                        let move_clone = Arc::clone(&move_gen);
+                        let resize_clone = Arc::clone(&resize_gen);
+                        let h = handle.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(200));
+                            if move_clone.load(Ordering::SeqCst) != stamp
+                                && resize_clone.load(Ordering::SeqCst) != stamp
+                            {
+                                return;
+                            }
+                            if let Some(w) = h.get_webview_window("diff") {
+                                let maximized = w.is_maximized().unwrap_or(false);
+                                // While maximized, the OS-reported outer_position/size
+                                // is the maximized geometry — useless for restoring
+                                // a "windowed" size next time. Only persist geometry
+                                // when not maximized; persist the flag either way.
+                                if maximized {
+                                    let mut s = settings::load(&h);
+                                    let prev = s.diff_window.unwrap_or(settings::DiffWindowState {
+                                        x: 200,
+                                        y: 100,
+                                        w: 1100,
+                                        h: 750,
+                                        maximized: false,
+                                    });
+                                    s.diff_window = Some(settings::DiffWindowState {
+                                        maximized: true,
+                                        ..prev
+                                    });
+                                    let _ = settings::save_replace(&h, &s);
+                                } else if let (Ok(pos), Ok(size)) =
+                                    (w.outer_position(), w.outer_size())
+                                {
+                                    settings::save_diff_window(
+                                        &h,
+                                        settings::DiffWindowState {
+                                            x: pos.x,
+                                            y: pos.y,
+                                            w: size.width,
+                                            h: size.height,
+                                            maximized: false,
+                                        },
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    _ => {}
+                });
             });
 
             if let Some(panel) = app.get_webview_window("panel") {
@@ -52,9 +133,20 @@ pub fn run() {
                         let handle_clone = handle.clone();
                         std::thread::spawn(move || {
                             std::thread::sleep(Duration::from_millis(BLUR_DEBOUNCE_MS));
-                            if gen_clone.load(Ordering::SeqCst) == stamp {
-                                window::hide_panel(&handle_clone);
+                            if gen_clone.load(Ordering::SeqCst) != stamp {
+                                return;
                             }
+                            // Don't dismiss the panel just because the user
+                            // clicked into our own diff window — that's still
+                            // an in-app interaction.
+                            let diff_visible = handle_clone
+                                .get_webview_window("diff")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(false);
+                            if diff_visible {
+                                return;
+                            }
+                            window::hide_panel(&handle_clone);
                         });
                     }
                     WindowEvent::Focused(true) => {
@@ -94,6 +186,10 @@ pub fn run() {
             commands::list_branches,
             commands::repo_commits,
             commands::changed_files,
+            commands::file_diff,
+            commands::commit_file_blobs,
+            commands::open_diff,
+            commands::take_pending_diff_open,
             commands::get_pinned_repos,
             commands::set_pinned_repos,
         ])
