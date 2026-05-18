@@ -6,6 +6,7 @@ import type {
   Repo,
   ScanComplete,
   ScanProgress,
+  TimelineRepoFill,
 } from "../types";
 
 export async function ping(): Promise<string> {
@@ -38,4 +39,10 @@ export async function onScanComplete(
   cb: (p: ScanComplete) => void,
 ): Promise<UnlistenFn> {
   return listen<ScanComplete>("discovery://complete", (e) => cb(e.payload));
+}
+
+export async function onTimelineRepoFill(
+  cb: (p: TimelineRepoFill) => void,
+): Promise<UnlistenFn> {
+  return listen<TimelineRepoFill>("timeline://repo-fill", (e) => cb(e.payload));
 }

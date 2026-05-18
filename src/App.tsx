@@ -9,14 +9,28 @@ import {
   listRepos,
   onScanComplete,
   onScanProgress,
-  recentCommits,
+  onTimelineRepoFill,
 } from "./lib/ipc";
 import type { CommitSummary } from "./types";
 import "./styles.css";
 
+const TIMELINE_MAX = 50;
+
 function startDrag(e: React.MouseEvent) {
   if (e.buttons !== 1) return;
   void getCurrentWindow().startDragging();
+}
+
+function mergeCommits(
+  prev: CommitSummary[],
+  incoming: CommitSummary[],
+): CommitSummary[] {
+  const map = new Map<string, CommitSummary>();
+  for (const c of prev) map.set(`${c.repoPath}:${c.hash}`, c);
+  for (const c of incoming) map.set(`${c.repoPath}:${c.hash}`, c);
+  return Array.from(map.values())
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, TIMELINE_MAX);
 }
 
 function App() {
@@ -28,26 +42,18 @@ function App() {
     let mounted = true;
     let unP: UnlistenFn | undefined;
     let unC: UnlistenFn | undefined;
-
-    async function refreshCommits() {
-      try {
-        const c = await recentCommits();
-        if (mounted) setCommits(c);
-      } catch {
-        if (mounted) setCommits((prev) => prev ?? []);
-      }
-    }
+    let unF: UnlistenFn | undefined;
 
     (async () => {
-      // 1. Paint cached commits immediately — usually ~1ms.
+      // 1. Paint cached commits immediately.
       try {
         const cached = await listRecentCommitsCached();
         if (mounted) setCommits(cached);
       } catch {
-        // First run: cache file may not exist yet. That's fine.
+        // First run.
       }
 
-      // 2. In parallel, learn the cached repo count for the header.
+      // 2. Cached repo count for the header.
       try {
         const repos = await listRepos();
         if (mounted) setRepoCount(repos.length);
@@ -55,33 +61,33 @@ function App() {
         // First run.
       }
 
-      // 3. Subscribe to discovery events before kicking off scan.
+      // 3. Subscribe before kicking off discovery.
       unP = await onScanProgress((p) => {
         if (mounted) setRepoCount(p.found);
       });
-      unC = await onScanComplete(async (p) => {
+      unC = await onScanComplete((p) => {
         if (!mounted) return;
         setRepoCount(p.count);
         setScanning(false);
-        await refreshCommits();
+      });
+      // 4. Stream per-repo commits into the timeline as discovery runs.
+      unF = await onTimelineRepoFill((p) => {
+        if (!mounted) return;
+        setCommits((prev) => mergeCommits(prev ?? [], p.commits));
       });
 
-      // 4. Kick off background discovery + refresh.
+      // 5. Kick off the scan.
       setScanning(true);
       void discoverRepos().catch(() => {
         if (mounted) setScanning(false);
       });
-
-      // 5. Also refresh commits from disk in parallel, even before
-      //    discovery completes — covers the case where the repo set
-      //    didn't change but commits did since last open.
-      void refreshCommits();
     })();
 
     return () => {
       mounted = false;
       unP?.();
       unC?.();
+      unF?.();
     };
   }, []);
 

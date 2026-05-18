@@ -15,6 +15,10 @@ export interface ScanComplete {
   count: number;
 }
 
+export interface TimelineRepoFill {
+  commits: CommitSummary[];
+}
+
 export interface CommitSummary {
   repoPath: string;
   repoName: string;

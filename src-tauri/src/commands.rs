@@ -32,6 +32,11 @@ struct ScanComplete {
     count: usize,
 }
 
+#[derive(Clone, Serialize)]
+struct TimelineRepoFill {
+    commits: Vec<git::CommitSummary>,
+}
+
 #[tauri::command]
 pub async fn list_recent_commits_cached(
     app: AppHandle,
@@ -93,6 +98,8 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
         let mut found: Vec<cache::Repo> = Vec::new();
         let roots = discovery::default_roots();
 
+        let cutoff = unix_now() - TIMELINE_WINDOW_DAYS * 86_400;
+
         for root in &roots {
             let root_str = root.to_string_lossy().into_owned();
             discovery::scan_path(root, |path| {
@@ -100,10 +107,12 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
                     .file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                found.push(cache::Repo {
-                    path: path.to_string_lossy().into_owned(),
-                    name,
-                });
+                let path_str = path.to_string_lossy().into_owned();
+                let repo = cache::Repo {
+                    path: path_str.clone(),
+                    name: name.clone(),
+                };
+                found.push(repo.clone());
                 let _ = app.emit(
                     "discovery://progress",
                     ScanProgress {
@@ -111,6 +120,28 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
                         found: found.len(),
                     },
                 );
+
+                // Fill the timeline incrementally: read this repo's recent
+                // commits right now and stream them to the panel so rows
+                // appear as repos are found. Errors are silently skipped.
+                let commits = git::recent_commits(&path, MAX_COMMITS_PER_REPO, cutoff)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|mut c| {
+                        c.repo_name = name.clone();
+                        c
+                    })
+                    .collect::<Vec<_>>();
+
+                if !commits.is_empty() {
+                    if let Ok(mut conn) = cache::open(&app) {
+                        let _ = cache::upsert_commits(&mut conn, &commits);
+                    }
+                    let _ = app.emit(
+                        "timeline://repo-fill",
+                        TimelineRepoFill { commits },
+                    );
+                }
             });
         }
 

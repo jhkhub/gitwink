@@ -40,17 +40,36 @@ pub fn recent_commits(
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let head = match repo.head() {
-        Ok(h) => h,
-        Err(_) => return Ok(Vec::new()),
-    };
-    let head_commit = match head.peel_to_commit() {
-        Ok(c) => c,
-        Err(_) => return Ok(Vec::new()),
-    };
-
     let mut revwalk = repo.revwalk().context("init revwalk")?;
-    revwalk.push(head_commit.id()).context("push HEAD")?;
+
+    // Walk every local ref head, not just HEAD. The revwalk dedupes commits
+    // that appear on multiple branches, so an agent that committed to a
+    // feature branch (or to a branch the user isn't currently on) still
+    // shows up in the timeline.
+    let mut pushed = 0usize;
+    if let Ok(refs) = repo.references_glob("refs/heads/*") {
+        for r in refs.flatten() {
+            if let Some(oid) = r.target() {
+                if revwalk.push(oid).is_ok() {
+                    pushed += 1;
+                }
+            }
+        }
+    }
+    // Fall back to HEAD if for some reason no heads were enumerable
+    // (newly-init'd repo, detached HEAD, etc.).
+    if pushed == 0 {
+        let head = match repo.head() {
+            Ok(h) => h,
+            Err(_) => return Ok(Vec::new()),
+        };
+        let head_commit = match head.peel_to_commit() {
+            Ok(c) => c,
+            Err(_) => return Ok(Vec::new()),
+        };
+        revwalk.push(head_commit.id()).context("push HEAD")?;
+    }
+
     revwalk
         .set_sorting(Sort::TIME)
         .context("set revwalk sort")?;
@@ -167,6 +186,50 @@ mod tests {
         let commits = recent_commits(dir.path(), 10, 1_000).unwrap();
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].summary, "new");
+    }
+
+    #[test]
+    fn walks_all_local_branches() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Commit on the default branch (becomes "refs/heads/master" or
+        // "refs/heads/main" depending on git config).
+        let main1 = commit_with_time(&repo, "main-only", 1_000, &[]);
+        let main1c = repo.find_commit(main1).unwrap();
+
+        // Branch "dev" off main and put a unique commit on it.
+        repo.branch("dev", &main1c, false).unwrap();
+        let sig = Signature::new("t", "t@e", &Time::new(2_000, 0)).unwrap();
+        let tree = empty_tree(&repo);
+        repo.commit(
+            Some("refs/heads/dev"),
+            &sig,
+            &sig,
+            "dev-only",
+            &tree,
+            &[&main1c],
+        )
+        .unwrap();
+
+        let commits = recent_commits(dir.path(), 10, 0).unwrap();
+        let summaries: Vec<&str> = commits.iter().map(|c| c.summary.as_str()).collect();
+        assert!(summaries.contains(&"main-only"), "missing main-only");
+        assert!(summaries.contains(&"dev-only"), "missing dev-only");
+    }
+
+    #[test]
+    fn dedupes_commits_visible_from_multiple_branches() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        // Single commit reachable from main and dev.
+        let shared = commit_with_time(&repo, "shared", 1_000, &[]);
+        let sharedc = repo.find_commit(shared).unwrap();
+        repo.branch("dev", &sharedc, false).unwrap();
+
+        let commits = recent_commits(dir.path(), 10, 0).unwrap();
+        assert_eq!(commits.len(), 1, "shared commit should appear once");
     }
 
     #[test]
