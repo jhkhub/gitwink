@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -87,6 +87,14 @@ function App() {
 
   const singleMode = selectedRepoPath != null;
 
+  // Mirror selectedRepoPath into a ref so the file-watcher listener — set up
+  // once in the bootstrap effect — can read the *current* value instead of
+  // the null it captured at mount.
+  const selectedRepoPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRepoPathRef.current = selectedRepoPath;
+  }, [selectedRepoPath]);
+
   // ----- bootstrap (All-repos timeline) -----
   useEffect(() => {
     let mounted = true;
@@ -128,8 +136,12 @@ function App() {
       unF = await onTimelineRepoFill((p) => {
         if (!mounted) return;
         // Only merge into the All-repos timeline; ignore while in single mode.
+        // Read the *current* selectedRepoPath via ref — the value captured in
+        // this closure at mount time is permanently null.
         setCommits((prev) =>
-          selectedRepoPath ? prev : mergeCommits(prev ?? [], p.commits),
+          selectedRepoPathRef.current
+            ? prev
+            : mergeCommits(prev ?? [], p.commits),
         );
         if (p.fresh && p.commits.length > 0) {
           setFreshHashes((prev) => {

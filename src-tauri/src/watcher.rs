@@ -3,7 +3,7 @@
 // refresh that re-reads that repo's recent commits and emits a
 // `timeline://repo-fill` event the frontend already knows how to merge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -28,7 +28,12 @@ struct RepoFillPayload {
 
 pub struct RepoWatcher {
     inner: Arc<Mutex<RecommendedWatcher>>,
-    watched: Arc<Mutex<HashSet<PathBuf>>>,
+    /// canonical .git dir → repo_path as the rest of the app sees it
+    /// (un-canonicalized, matches what discovery / cache use). Notify
+    /// reports events with the canonical form on Windows (`\\?\…` prefix),
+    /// so we need this lookup to emit a path that matches the cache and
+    /// the all-mode rows.
+    git_to_repo: Arc<Mutex<HashMap<PathBuf, PathBuf>>>,
 }
 
 impl RepoWatcher {
@@ -38,6 +43,10 @@ impl RepoWatcher {
         let lf = Arc::clone(&last_fired);
         let app_for_event = app.clone();
 
+        let git_to_repo: Arc<Mutex<HashMap<PathBuf, PathBuf>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let g2r = Arc::clone(&git_to_repo);
+
         let watcher = notify::recommended_watcher(move |res: notify::Result<Event>| {
             let Ok(event) = res else {
                 return;
@@ -46,8 +55,9 @@ impl RepoWatcher {
                 return;
             };
 
-            // Walk up to the .git directory we're watching, then take its parent
-            // as the repo root.
+            // Walk up to the .git directory we're watching, then look it up
+            // in the map to get the repo_path *in the form the rest of the
+            // app uses* (cache rows, discovery output, panel state).
             let Some(git_dir) = path.ancestors().find(|p| {
                 p.file_name()
                     .and_then(|n| n.to_str())
@@ -56,8 +66,12 @@ impl RepoWatcher {
             }) else {
                 return;
             };
-            let Some(repo_path) = git_dir.parent().map(|p| p.to_path_buf()) else {
-                return;
+            let repo_path = {
+                let map = g2r.lock().unwrap();
+                match map.get(git_dir) {
+                    Some(p) => p.clone(),
+                    None => return,
+                }
             };
 
             // Per-repo debounce — `git commit` fires several writes inside
@@ -82,7 +96,7 @@ impl RepoWatcher {
 
         Ok(Self {
             inner: Arc::new(Mutex::new(watcher)),
-            watched: Arc::new(Mutex::new(HashSet::new())),
+            git_to_repo,
         })
     }
 
@@ -93,14 +107,14 @@ impl RepoWatcher {
             // Skip for v0.1 — main usecase is normal clones.
             return;
         }
-        let canon = git_dir.canonicalize().unwrap_or(git_dir);
-        let mut watched = self.watched.lock().unwrap();
-        if watched.contains(&canon) {
+        let canon = git_dir.canonicalize().unwrap_or_else(|_| git_dir.clone());
+        let mut map = self.git_to_repo.lock().unwrap();
+        if map.contains_key(&canon) {
             return;
         }
         let mut w = self.inner.lock().unwrap();
         if w.watch(&canon, RecursiveMode::Recursive).is_ok() {
-            watched.insert(canon);
+            map.insert(canon, repo_path.to_path_buf());
         }
     }
 }
