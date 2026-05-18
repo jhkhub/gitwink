@@ -9,6 +9,7 @@ import { Timeline } from "./components/Timeline";
 import { TimeRangeChip } from "./components/TimeRangeChip";
 import {
   discoverRepos,
+  dismissPanel,
   getPinnedRepos,
   listBranches,
   listRecentCommitsCached,
@@ -226,7 +227,7 @@ function App() {
         return;
       }
       // Nothing else to close — dismiss the panel itself.
-      void getCurrentWindow().hide();
+      void dismissPanel();
       e.preventDefault();
     }
     window.addEventListener("keydown", onKey);
@@ -335,8 +336,8 @@ function App() {
         <button
           type="button"
           className="panel-close"
-          onClick={() => void getCurrentWindow().hide()}
-          title="Close (Esc)"
+          onClick={() => void dismissPanel()}
+          title="Close (Esc) — closes diff window too"
         >
           ✕
         </button>

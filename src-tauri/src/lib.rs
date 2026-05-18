@@ -191,6 +191,7 @@ pub fn run() {
             commands::commit_file_blobs,
             commands::open_diff,
             commands::take_pending_diff_open,
+            commands::dismiss_panel,
             commands::get_pinned_repos,
             commands::set_pinned_repos,
         ])

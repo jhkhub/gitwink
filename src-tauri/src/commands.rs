@@ -204,6 +204,18 @@ pub fn take_pending_diff_open(
     state.lock().ok().and_then(|s| s.clone())
 }
 
+/// Explicit "close everything" — hides the main panel AND the diff window
+/// (the ✕ button and any global dismiss action both route here).
+#[tauri::command]
+pub fn dismiss_panel(app: AppHandle) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.hide();
+    }
+    if let Some(diff) = app.get_webview_window("diff") {
+        let _ = diff.hide();
+    }
+}
+
 #[tauri::command]
 pub async fn open_diff(
     app: AppHandle,

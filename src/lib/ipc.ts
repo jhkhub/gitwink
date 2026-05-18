@@ -126,6 +126,10 @@ export async function takePendingDiffOpen(): Promise<DiffOpenPayload | null> {
   return invoke<DiffOpenPayload | null>("take_pending_diff_open");
 }
 
+export async function dismissPanel(): Promise<void> {
+  await invoke("dismiss_panel");
+}
+
 export async function getPinnedRepos(): Promise<string[]> {
   return invoke<string[]>("get_pinned_repos");
 }
