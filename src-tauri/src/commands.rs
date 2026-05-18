@@ -120,6 +120,18 @@ pub async fn list_branches(repo_path: String) -> Result<Vec<git::BranchInfo>, St
 }
 
 #[tauri::command]
+pub async fn changed_files(
+    repo_path: String,
+    hash: String,
+) -> Result<Vec<git::ChangedFile>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::changed_files(Path::new(&repo_path), &hash).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub async fn repo_commits(
     app: AppHandle,
     repo_path: String,

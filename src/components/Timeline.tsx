@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { colorForBranch } from "../lib/colors";
 import { computeLanes } from "../lib/lanes";
 import type { BranchInfo, CommitSummary } from "../types";
+import { ChangedFiles } from "./ChangedFiles";
+import { CommitDetail } from "./CommitDetail";
 import { LaneGraph } from "./LaneGraph";
 
 interface Props {
@@ -13,9 +15,6 @@ interface Props {
   /** Single-repo mode: list of branches so we can color by branch identity. */
   branches?: BranchInfo[];
 }
-
-const ROW_HEIGHT_SINGLE = 31; // must match .timeline-single .timeline-row height
-const FIRST_ROW_CENTER = 15.5; // half of ROW_HEIGHT_SINGLE
 
 function timeAgo(unixSeconds: number): string {
   const now = Math.floor(Date.now() / 1000);
@@ -34,11 +33,28 @@ function marker(c: CommitSummary): { glyph: string; cls: string; title: string }
 
 export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
   const [selected, setSelected] = useState(0);
+  const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const listRef = useRef<HTMLUListElement | null>(null);
+  const rowRefs = useRef<(HTMLLIElement | null)[]>([]);
+  const [rowYs, setRowYs] = useState<number[]>([]);
+
+  rowRefs.current.length = commits.length;
 
   useEffect(() => {
     if (selected > commits.length - 1) setSelected(Math.max(0, commits.length - 1));
   }, [commits.length, selected]);
+
+  // Reset expansion when the commit list itself changes (e.g. filter swap).
+  useEffect(() => {
+    setExpandedHash(null);
+  }, [commits]);
+
+  const toggleExpand = useCallback(
+    (hash: string) => {
+      setExpandedHash((cur) => (cur === hash ? null : hash));
+    },
+    [],
+  );
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -50,11 +66,19 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
       } else if (e.key === "k" || e.key === "ArrowUp") {
         setSelected((s) => Math.max(s - 1, 0));
         e.preventDefault();
+      } else if (e.key === "Enter") {
+        const c = commits[selected];
+        if (c) toggleExpand(c.hash);
+        e.preventDefault();
+      } else if (e.key === "Escape" && expandedHash != null) {
+        setExpandedHash(null);
+        e.preventDefault();
+        e.stopPropagation();
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commits.length]);
+  }, [commits, selected, toggleExpand, expandedHash]);
 
   useEffect(() => {
     const row = listRef.current?.querySelector<HTMLLIElement>(
@@ -62,6 +86,22 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
     );
     row?.scrollIntoView({ block: "nearest" });
   }, [selected]);
+
+  // Measure each commit row's vertical center for the lane SVG. Re-runs on
+  // every relevant change (commits, expansion, mode) so the DAG stays
+  // aligned even after an inline expansion pushes later rows down.
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const ys: number[] = [];
+    for (let i = 0; i < rowRefs.current.length; i++) {
+      const el = rowRefs.current[i];
+      if (el) {
+        ys[i] = el.offsetTop + el.offsetHeight / 2;
+      }
+    }
+    setRowYs(ys);
+  }, [commits, expandedHash, mode]);
 
   const showRepo = mode === "all";
   const headBranch = branches?.find((b) => b.isHead)?.name ?? null;
@@ -79,55 +119,69 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
 
   return (
     <ul className={"timeline timeline-" + mode} ref={listRef}>
-      {laneGraph && (
-        <LaneGraph
-          graph={laneGraph}
-          rowHeight={ROW_HEIGHT_SINGLE}
-          firstRowCenter={FIRST_ROW_CENTER}
-        />
+      {laneGraph && rowYs.length === commits.length && (
+        <LaneGraph graph={laneGraph} rowYs={rowYs} />
       )}
       {commits.map((c, i) => {
         const m = marker(c);
         return (
-          <li
-            key={`${c.repoPath}:${c.hash}`}
-            data-row={i}
-            className={"timeline-row" + (i === selected ? " selected" : "")}
-            onClick={() => setSelected(i)}
-          >
-            {mode === "single" ? (
-              <span className="timeline-lane-spacer" aria-hidden="true" />
-            ) : (
-              <span className={"timeline-marker " + m.cls} title={m.title}>
-                {m.glyph}
-              </span>
-            )}
-            <span className="timeline-time">{timeAgo(c.timestamp)}</span>
-            {showRepo && (
-              <span
-                className={
-                  "timeline-repo" + (onSelectRepo ? " timeline-repo-clickable" : "")
-                }
-                title={`${c.repoPath} (click to filter)`}
-                onClick={(e) => {
-                  if (!onSelectRepo) return;
-                  e.stopPropagation();
-                  onSelectRepo(c.repoPath);
-                }}
-              >
-                {c.repoName}
-              </span>
-            )}
-            <span className="timeline-summary" title={c.summary}>
-              {c.branchLabel && (
-                <span className="timeline-branch">[{c.branchLabel}]</span>
+          <Fragment key={`${c.repoPath}:${c.hash}`}>
+            <li
+              data-row={i}
+              ref={(el) => {
+                rowRefs.current[i] = el;
+              }}
+              className={
+                "timeline-row" +
+                (i === selected ? " selected" : "") +
+                (expandedHash === c.hash ? " expanded" : "")
+              }
+              onClick={() => {
+                setSelected(i);
+                toggleExpand(c.hash);
+              }}
+            >
+              {mode === "single" ? (
+                <span className="timeline-lane-spacer" aria-hidden="true" />
+              ) : (
+                <span className={"timeline-marker " + m.cls} title={m.title}>
+                  {m.glyph}
+                </span>
               )}
-              {c.summary}
-            </span>
-            <span className="timeline-author" title={c.email}>
-              {c.author}
-            </span>
-          </li>
+              <span className="timeline-time">{timeAgo(c.timestamp)}</span>
+              {showRepo && (
+                <span
+                  className={
+                    "timeline-repo" +
+                    (onSelectRepo ? " timeline-repo-clickable" : "")
+                  }
+                  title={`${c.repoPath} (click to filter)`}
+                  onClick={(e) => {
+                    if (!onSelectRepo) return;
+                    e.stopPropagation();
+                    onSelectRepo(c.repoPath);
+                  }}
+                >
+                  {c.repoName}
+                </span>
+              )}
+              <span className="timeline-summary" title={c.summary}>
+                {c.branchLabel && (
+                  <span className="timeline-branch">[{c.branchLabel}]</span>
+                )}
+                {c.summary}
+              </span>
+              <span className="timeline-author" title={c.email}>
+                {c.author}
+              </span>
+            </li>
+            {expandedHash === c.hash && (
+              <li className="timeline-expansion" onClick={(e) => e.stopPropagation()}>
+                <CommitDetail commit={c} />
+                <ChangedFiles repoPath={c.repoPath} hash={c.hash} />
+              </li>
+            )}
+          </Fragment>
         );
       })}
     </ul>

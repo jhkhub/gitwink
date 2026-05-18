@@ -33,6 +33,20 @@ pub struct CommitSummary {
     /// Parent commit SHAs in order (first parent, then merge parents).
     /// Needed by the DAG lane drawer in single-repo mode.
     pub parents: Vec<String>,
+    /// Full commit message (summary + body). Surfaced in the inline
+    /// expansion. Empty string if libgit2 couldn't decode it.
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    pub old_path: Option<String>,
+    pub insertions: usize,
+    pub deletions: usize,
+    /// "modified" | "new" | "renamed" | "deleted" | "typechange"
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +58,95 @@ pub struct BranchInfo {
     pub commit_count: usize,
     /// Unix seconds of the tip commit, for "recent activity" sort.
     pub last_activity: i64,
+}
+
+/// Return the changed file list for the given commit. Compares against the
+/// first parent (root commit compares against an empty tree). Renames are
+/// detected via libgit2's similarity heuristic.
+pub fn changed_files(repo_path: &Path, commit_hash: &str) -> Result<Vec<ChangedFile>> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("open repo {}", repo_path.display()))?;
+    let oid = git2::Oid::from_str(commit_hash).context("parse commit hash")?;
+    let commit = repo.find_commit(oid).context("find commit")?;
+
+    let new_tree = commit.tree().context("commit tree")?;
+    let old_tree = if commit.parent_count() > 0 {
+        Some(commit.parent(0)?.tree()?)
+    } else {
+        None
+    };
+
+    let mut diff = repo
+        .diff_tree_to_tree(old_tree.as_ref(), Some(&new_tree), None)
+        .context("diff trees")?;
+    let mut find_opts = git2::DiffFindOptions::new();
+    find_opts.renames(true).copies(false);
+    diff.find_similar(Some(&mut find_opts)).ok();
+
+    // Per-path line counts via a single print pass.
+    let mut counts: std::collections::HashMap<String, (usize, usize)> =
+        std::collections::HashMap::new();
+    diff.print(git2::DiffFormat::Patch, |delta, _, line| {
+        let p = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let entry = counts.entry(p).or_insert((0, 0));
+        match line.origin() {
+            '+' => entry.0 += 1,
+            '-' => entry.1 += 1,
+            _ => {}
+        }
+        true
+    })
+    .ok();
+
+    let mut out: Vec<ChangedFile> = Vec::new();
+    for delta in diff.deltas() {
+        let new_path = delta
+            .new_file()
+            .path()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let old_path = delta
+            .old_file()
+            .path()
+            .map(|p| p.to_string_lossy().into_owned());
+
+        let status = match delta.status() {
+            git2::Delta::Added => "new",
+            git2::Delta::Deleted => "deleted",
+            git2::Delta::Renamed => "renamed",
+            git2::Delta::Copied => "copied",
+            git2::Delta::Typechange => "typechange",
+            _ => "modified",
+        }
+        .to_string();
+
+        let display_path = if status == "deleted" {
+            old_path.clone().unwrap_or_else(|| new_path.clone())
+        } else {
+            new_path.clone()
+        };
+
+        let (insertions, deletions) = counts
+            .get(&display_path)
+            .or_else(|| old_path.as_ref().and_then(|p| counts.get(p)))
+            .copied()
+            .unwrap_or((0, 0));
+
+        out.push(ChangedFile {
+            path: display_path,
+            old_path: if status == "renamed" { old_path } else { None },
+            insertions,
+            deletions,
+            status,
+        });
+    }
+
+    Ok(out)
 }
 
 pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
@@ -256,6 +359,7 @@ pub fn repo_commits(
             commit_to_branch.get(&oid).cloned()
         };
         let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
+        let message = commit.message().unwrap_or("").to_string();
         out.push(CommitSummary {
             repo_path: repo_path_str.clone(),
             repo_name: repo_name.clone(),
@@ -269,6 +373,7 @@ pub fn repo_commits(
             is_merge: commit.parent_count() > 1,
             is_tagged: tagged_oids.contains(&oid),
             parents,
+            message,
         });
     }
 
@@ -426,6 +531,7 @@ pub fn recent_commits(
             commit_to_branch.get(&oid).cloned()
         };
         let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
+        let message = commit.message().unwrap_or("").to_string();
         out.push(CommitSummary {
             repo_path: repo_path_str.clone(),
             repo_name: repo_name.clone(),
@@ -439,6 +545,7 @@ pub fn recent_commits(
             is_merge: commit.parent_count() > 1,
             is_tagged: tagged_oids.contains(&oid),
             parents,
+            message,
         });
     }
 

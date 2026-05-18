@@ -54,6 +54,7 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
             is_merge INTEGER NOT NULL DEFAULT 0,
             is_tagged INTEGER NOT NULL DEFAULT 0,
             parents TEXT NOT NULL DEFAULT '[]',
+            message TEXT NOT NULL DEFAULT '',
             PRIMARY KEY (repo_path, hash)
         );
         CREATE INDEX IF NOT EXISTS idx_commits_ts ON commits(timestamp);
@@ -83,6 +84,10 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
     );
     let _ = conn.execute(
         "ALTER TABLE commits ADD COLUMN parents TEXT NOT NULL DEFAULT '[]'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE commits ADD COLUMN message TEXT NOT NULL DEFAULT ''",
         [],
     );
     Ok(conn)
@@ -134,8 +139,8 @@ pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Resul
     {
         let mut stmt = tx.prepare(
             r#"
-            INSERT INTO commits (repo_path, hash, repo_name, short_hash, summary, author, email, timestamp, branch_label, is_merge, is_tagged, parents)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            INSERT INTO commits (repo_path, hash, repo_name, short_hash, summary, author, email, timestamp, branch_label, is_merge, is_tagged, parents, message)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
             ON CONFLICT(repo_path, hash) DO UPDATE SET
                 repo_name = excluded.repo_name,
                 summary = excluded.summary,
@@ -145,7 +150,8 @@ pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Resul
                 branch_label = excluded.branch_label,
                 is_merge = excluded.is_merge,
                 is_tagged = excluded.is_tagged,
-                parents = excluded.parents
+                parents = excluded.parents,
+                message = excluded.message
             "#,
         )?;
         for c in commits {
@@ -162,7 +168,8 @@ pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Resul
                 c.branch_label,
                 c.is_merge as i32,
                 c.is_tagged as i32,
-                parents_json
+                parents_json,
+                c.message
             ])?;
         }
     }
@@ -177,7 +184,7 @@ pub fn list_recent_commits(
 ) -> Result<Vec<CommitSummary>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT repo_path, repo_name, hash, short_hash, summary, author, email, timestamp, branch_label, is_merge, is_tagged, parents
+        SELECT repo_path, repo_name, hash, short_hash, summary, author, email, timestamp, branch_label, is_merge, is_tagged, parents, message
         FROM commits
         WHERE timestamp >= ?1
         ORDER BY timestamp DESC
@@ -201,6 +208,7 @@ pub fn list_recent_commits(
                 is_merge: row.get::<_, i32>(9)? != 0,
                 is_tagged: row.get::<_, i32>(10)? != 0,
                 parents,
+                message: row.get(12)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;

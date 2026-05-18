@@ -546,3 +546,236 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.timeline-row.expanded {
+  background: rgba(80, 130, 240, 0.10);
+}
+
+/* ----- inline expansion (commit detail + changed files) ----- */
+
+.timeline-expansion {
+  list-style: none;
+  padding: 8px 12px 10px 50px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.025);
+  overflow: hidden;
+  animation: expand-in 160ms ease-out;
+}
+
+@media (prefers-color-scheme: dark) {
+  .timeline-expansion {
+    border-bottom-color: rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.025);
+  }
+}
+
+@keyframes expand-in {
+  from {
+    max-height: 0;
+    opacity: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  to {
+    max-height: 600px;
+    opacity: 1;
+  }
+}
+
+/* commit detail block above the file list */
+
+.commit-detail {
+  padding: 2px 0 8px;
+  border-bottom: 1px dashed rgba(0, 0, 0, 0.07);
+  margin-bottom: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .commit-detail {
+    border-bottom-color: rgba(255, 255, 255, 0.07);
+  }
+}
+
+.commit-detail-summary {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.commit-detail-body {
+  font-size: 11px;
+  margin: 4px 0 6px;
+  padding: 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+  opacity: 0.85;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.commit-detail-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.commit-detail-hash {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+  background: rgba(0, 0, 0, 0.08);
+  padding: 0 5px;
+  border-radius: 3px;
+  font-size: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  .commit-detail-hash {
+    background: rgba(255, 255, 255, 0.10);
+  }
+}
+
+.commit-detail-email {
+  opacity: 0.7;
+}
+
+.changed-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.changed-files-empty {
+  padding: 4px 0;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+.changed-file {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.changed-file-clickable {
+  cursor: pointer;
+}
+
+.changed-file-clickable:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  .changed-file-clickable:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
+.changed-file-badge {
+  display: inline-block;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.08);
+  color: rgba(0, 0, 0, 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  .changed-file-badge {
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.85);
+  }
+}
+
+.badge-new {
+  background: rgba(80, 200, 120, 0.20);
+  color: rgba(45, 150, 80, 1);
+}
+.badge-mod {
+  background: rgba(80, 130, 240, 0.16);
+  color: rgba(60, 110, 220, 1);
+}
+.badge-ren {
+  background: rgba(200, 140, 60, 0.18);
+  color: rgba(170, 110, 30, 1);
+}
+.badge-del {
+  background: rgba(220, 80, 80, 0.18);
+  color: rgba(190, 50, 50, 1);
+}
+.badge-cp {
+  background: rgba(140, 100, 200, 0.16);
+  color: rgba(110, 70, 170, 1);
+}
+.badge-type {
+  background: rgba(140, 140, 140, 0.16);
+  color: rgba(100, 100, 100, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .badge-new { color: rgba(120, 220, 150, 1); }
+  .badge-mod { color: rgba(140, 180, 255, 1); }
+  .badge-ren { color: rgba(230, 175, 100, 1); }
+  .badge-del { color: rgba(255, 130, 130, 1); }
+  .badge-cp  { color: rgba(190, 150, 240, 1); }
+  .badge-type { color: rgba(190, 190, 190, 1); }
+}
+
+.changed-file-path {
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+}
+
+.changed-file-dir {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.5;
+  font-weight: 400;
+}
+
+.changed-file-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.changed-file-old {
+  opacity: 0.55;
+  margin-right: 4px;
+}
+
+.changed-file-stat {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.changed-file-plus {
+  color: rgba(60, 160, 90, 1);
+}
+.changed-file-minus {
+  color: rgba(200, 80, 80, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .changed-file-plus {
+    color: rgba(120, 220, 150, 1);
+  }
+  .changed-file-minus {
+    color: rgba(255, 130, 130, 1);
+  }
+}

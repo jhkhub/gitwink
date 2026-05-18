@@ -2,37 +2,35 @@ import type { LaneGraphData } from "../lib/lanes";
 
 interface Props {
   graph: LaneGraphData;
-  rowHeight: number;
-  /** Vertical offset to the center of the first row (for aligning with
-   * the timeline-row baselines). */
-  firstRowCenter: number;
+  /** Centre-y for each commit row in panel-body local coordinates. */
+  rowYs: number[];
 }
 
 const LANE_WIDTH = 12;
 const CIRCLE_R = 3.5;
 
-export function LaneGraph({ graph, rowHeight, firstRowCenter }: Props) {
+export function LaneGraph({ graph, rowYs }: Props) {
   const width = Math.max(graph.totalLanes * LANE_WIDTH, LANE_WIDTH);
-  const height = (graph.laneCommits.length - 1) * rowHeight + firstRowCenter * 2;
+  const lastY = rowYs.length > 0 ? rowYs[rowYs.length - 1] : 0;
+  const height = lastY + 24;
 
   function cx(lane: number): number {
     return lane * LANE_WIDTH + LANE_WIDTH / 2;
   }
   function cy(idx: number): number {
-    return firstRowCenter + idx * rowHeight;
+    return rowYs[idx] ?? 0;
   }
 
   return (
     <svg
       className="lane-graph"
       width={width}
-      height={Math.max(height, rowHeight)}
-      viewBox={`0 0 ${width} ${Math.max(height, rowHeight)}`}
+      height={height}
+      viewBox={`0 0 ${width} ${height}`}
     >
-      {/* Edges below circles. */}
       {graph.edges.map((e, i) => {
         const fromY = cy(e.fromIdx);
-        const toY = e.toIdx >= 0 ? cy(e.toIdx) : height + 12;
+        const toY = e.toIdx >= 0 ? cy(e.toIdx) : height;
         const fromX = cx(e.fromLane);
         const toX = cx(e.toLane);
         const d =

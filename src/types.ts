@@ -34,6 +34,8 @@ export interface CommitSummary {
   isTagged: boolean;
   /** Parent commit SHAs in order. Used by the DAG lane drawer. */
   parents: string[];
+  /** Full commit message (summary + body). */
+  message: string;
 }
 
 export interface BranchInfo {
@@ -52,10 +54,18 @@ export interface AuthorTally {
   lastActivity: number;
 }
 
+export type ChangedFileStatus =
+  | "modified"
+  | "new"
+  | "renamed"
+  | "deleted"
+  | "copied"
+  | "typechange";
+
 export interface ChangedFile {
   path: string;
-  oldPath?: string;
+  oldPath: string | null;
   insertions: number;
   deletions: number;
-  status: "modified" | "new" | "renamed" | "deleted";
+  status: ChangedFileStatus;
 }

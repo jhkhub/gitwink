@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
   BranchInfo,
+  ChangedFile,
   CommitSummary,
   Repo,
   ScanComplete,
@@ -50,6 +51,13 @@ export async function repoCommits(
     branches,
     windowDays,
   });
+}
+
+export async function changedFiles(
+  repoPath: string,
+  hash: string,
+): Promise<ChangedFile[]> {
+  return invoke<ChangedFile[]>("changed_files", { repoPath, hash });
 }
 
 export async function getPinnedRepos(): Promise<string[]> {

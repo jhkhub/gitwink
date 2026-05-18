@@ -93,6 +93,7 @@ pub fn run() {
             commands::recent_commits,
             commands::list_branches,
             commands::repo_commits,
+            commands::changed_files,
             commands::get_pinned_repos,
             commands::set_pinned_repos,
         ])
