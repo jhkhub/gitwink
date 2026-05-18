@@ -212,15 +212,22 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBranches]);
 
-  // ----- ESC: exit single-repo mode (when no chip dropdown is open) -----
+  // ----- ESC layer cascade: chip → expansion (in Timeline) → single-repo → hide panel -----
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
-      if (openChip != null) return; // chip handles its own Esc first
+      if (openChip != null) return; // dropdown handles its own Esc
+      // Timeline's Esc handler stopImmediatePropagation()s if an
+      // expansion is open, so by the time we get here neither a
+      // dropdown nor an expansion needs Esc.
       if (singleMode) {
         setSelectedRepoPath(null);
         e.preventDefault();
+        return;
       }
+      // Nothing else to close — dismiss the panel itself.
+      void getCurrentWindow().hide();
+      e.preventDefault();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -274,6 +281,12 @@ function App() {
   return (
     <main className={"panel" + (singleMode ? " single-mode" : "")}>
       <header className="panel-header" onPointerDown={startDrag}>
+        <img
+          src="/icon.png"
+          alt=""
+          className="panel-header-icon"
+          draggable={false}
+        />
         <h1>gitwink</h1>
         <div className="header-chips">
           <RepoChip
@@ -319,6 +332,14 @@ function App() {
         </div>
         <div className="panel-drag-handle" />
         {scanning && <span className="panel-status">Scanning…</span>}
+        <button
+          type="button"
+          className="panel-close"
+          onClick={() => void getCurrentWindow().hide()}
+          title="Close (Esc)"
+        >
+          ✕
+        </button>
       </header>
       <section className="panel-body">
         {filteredCommits == null ? (

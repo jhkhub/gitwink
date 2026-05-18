@@ -58,6 +58,16 @@ body,
   }
 }
 
+.panel-header-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  align-self: center;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 .panel-header h1 {
   font-size: 13px;
   font-weight: 600;
@@ -92,6 +102,35 @@ body,
   font-size: 11px;
   opacity: 0.6;
   flex-shrink: 0;
+}
+
+.panel-close {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.55;
+  align-self: center;
+}
+
+.panel-close:hover {
+  background: rgba(0, 0, 0, 0.08);
+  opacity: 1;
+}
+
+@media (prefers-color-scheme: dark) {
+  .panel-close:hover {
+    background: rgba(255, 255, 255, 0.10);
+  }
 }
 
 /* ----- chips (live inside .header-chips now) ----- */

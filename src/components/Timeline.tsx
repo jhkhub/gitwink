@@ -126,7 +126,9 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
       } else if (e.key === "Escape" && expandedHash != null) {
         setExpandedHash(null);
         e.preventDefault();
-        e.stopPropagation();
+        // Block other Esc handlers (App-level panel hide) from firing
+        // when we've consumed the keystroke to collapse the expansion.
+        e.stopImmediatePropagation();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -247,21 +249,29 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
     row?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
-  // Measure each commit row's vertical center for the lane SVG. Re-runs on
-  // every relevant change (commits, expansion, mode) so the DAG stays
-  // aligned even after an inline expansion pushes later rows down.
+  // Measure each commit row's vertical center for the lane SVG. We watch
+  // the list itself with a ResizeObserver so the DAG re-aligns whenever
+  // an inline expansion is added or collapsed — synchronous measurement
+  // via useLayoutEffect alone was racing with React's commit/layout cycle
+  // when the expansion li mounted.
   useLayoutEffect(() => {
     const list = listRef.current;
     if (!list) return;
-    const ys: number[] = [];
-    for (let i = 0; i < rowRefs.current.length; i++) {
-      const el = rowRefs.current[i];
-      if (el) {
-        ys[i] = el.offsetTop + el.offsetHeight / 2;
+
+    function measure() {
+      const ys: number[] = [];
+      for (let i = 0; i < rowRefs.current.length; i++) {
+        const el = rowRefs.current[i];
+        if (el) ys[i] = el.offsetTop + el.offsetHeight / 2;
       }
+      setRowYs(ys);
     }
-    setRowYs(ys);
-  }, [commits, expandedHash, mode]);
+
+    measure();
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(list);
+    return () => observer.disconnect();
+  }, [commits, mode]);
 
   const showRepo = mode === "all";
   const headBranch = branches?.find((b) => b.isHead)?.name ?? null;
