@@ -640,6 +640,38 @@ body,
   opacity: 0.7;
 }
 
+.commit-actions {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.commit-copy-btn {
+  padding: 3px 10px;
+  border: 1px solid rgba(80, 130, 240, 0.4);
+  border-radius: 4px;
+  background: rgba(80, 130, 240, 0.10);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 100ms;
+}
+
+.commit-copy-btn:hover {
+  background: rgba(80, 130, 240, 0.20);
+}
+
+@media (prefers-color-scheme: dark) {
+  .commit-copy-btn {
+    border-color: rgba(140, 180, 255, 0.45);
+    background: rgba(140, 180, 255, 0.14);
+  }
+  .commit-copy-btn:hover {
+    background: rgba(140, 180, 255, 0.24);
+  }
+}
+
 .changed-files {
   display: flex;
   flex-direction: column;

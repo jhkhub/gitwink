@@ -61,6 +61,18 @@ export async function changedFiles(
   return invoke<ChangedFile[]>("changed_files", { repoPath, hash });
 }
 
+/** Fire-and-forget prefetch on hover. Errors are swallowed silently. */
+export async function prefetchCommit(
+  repoPath: string,
+  hash: string,
+): Promise<void> {
+  try {
+    await invoke("changed_files", { repoPath, hash });
+  } catch {
+    /* swallow */
+  }
+}
+
 export async function fileDiff(
   repoPath: string,
   hash: string,

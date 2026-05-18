@@ -3,7 +3,10 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 import { colorForBranch } from "../lib/colors";
 import { computeLanes } from "../lib/lanes";
 import type { BranchInfo, CommitSummary } from "../types";
-import { openDiff } from "../lib/ipc";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+
+import { buildAiContext } from "../lib/copy";
+import { changedFiles, fileDiff, openDiff, prefetchCommit } from "../lib/ipc";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
 import { LaneGraph } from "./LaneGraph";
@@ -35,9 +38,13 @@ function marker(c: CommitSummary): { glyph: string; cls: string; title: string }
 export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
   const [selected, setSelected] = useState(0);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
+    "idle",
+  );
   const listRef = useRef<HTMLUListElement | null>(null);
   const rowRefs = useRef<(HTMLLIElement | null)[]>([]);
   const [rowYs, setRowYs] = useState<number[]>([]);
+  const hoverTimers = useRef(new Map<string, number>());
 
   rowRefs.current.length = commits.length;
 
@@ -57,6 +64,38 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
     [],
   );
 
+  const copyAiContext = useCallback(async (commit: CommitSummary) => {
+    try {
+      const files = await changedFiles(commit.repoPath, commit.hash);
+      let diffText: string | null = null;
+      const TOTAL_LINES = files.reduce(
+        (a, f) => a + (f.isBinary ? 0 : f.insertions + f.deletions),
+        0,
+      );
+      // Pull full diff only when it's small enough to be useful in a chat
+      // prompt; bigger commits get a file list summary only.
+      if (!files.some((f) => f.isBinary) && TOTAL_LINES <= 800) {
+        try {
+          const parts: string[] = [];
+          for (const f of files) {
+            const t = await fileDiff(commit.repoPath, commit.hash, f.path);
+            parts.push(`--- ${f.path}\n${t}`);
+          }
+          diffText = parts.join("\n");
+        } catch {
+          diffText = null;
+        }
+      }
+      const md = buildAiContext(commit, files, diffText);
+      await writeText(md);
+      setCopyStatus("copied");
+      setTimeout(() => setCopyStatus("idle"), 1500);
+    } catch {
+      setCopyStatus("error");
+      setTimeout(() => setCopyStatus("idle"), 2000);
+    }
+  }, []);
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
@@ -71,6 +110,12 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
         const c = commits[selected];
         if (c) toggleExpand(c.hash);
         e.preventDefault();
+      } else if (e.key === "c" || e.key === "C") {
+        const c = commits[selected];
+        if (c) {
+          void copyAiContext(c);
+          e.preventDefault();
+        }
       } else if (e.key === "Escape" && expandedHash != null) {
         setExpandedHash(null);
         e.preventDefault();
@@ -79,7 +124,37 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commits, selected, toggleExpand, expandedHash]);
+  }, [commits, selected, toggleExpand, expandedHash, copyAiContext]);
+
+  // Clean up any pending hover timers when the commit list changes.
+  useEffect(() => {
+    const timers = hoverTimers.current;
+    return () => {
+      for (const id of timers.values()) {
+        window.clearTimeout(id);
+      }
+      timers.clear();
+    };
+  }, [commits]);
+
+  function onRowEnter(c: CommitSummary) {
+    const key = `${c.repoPath}:${c.hash}`;
+    if (hoverTimers.current.has(key)) return;
+    const id = window.setTimeout(() => {
+      void prefetchCommit(c.repoPath, c.hash);
+      hoverTimers.current.delete(key);
+    }, 200);
+    hoverTimers.current.set(key, id);
+  }
+
+  function onRowLeave(c: CommitSummary) {
+    const key = `${c.repoPath}:${c.hash}`;
+    const id = hoverTimers.current.get(key);
+    if (id != null) {
+      window.clearTimeout(id);
+      hoverTimers.current.delete(key);
+    }
+  }
 
   useEffect(() => {
     const row = listRef.current?.querySelector<HTMLLIElement>(
@@ -141,6 +216,8 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
                 setSelected(i);
                 toggleExpand(c.hash);
               }}
+              onMouseEnter={() => onRowEnter(c)}
+              onMouseLeave={() => onRowLeave(c)}
             >
               {mode === "single" ? (
                 <span className="timeline-lane-spacer" aria-hidden="true" />
@@ -179,6 +256,20 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
             {expandedHash === c.hash && (
               <li className="timeline-expansion" onClick={(e) => e.stopPropagation()}>
                 <CommitDetail commit={c} />
+                <div className="commit-actions">
+                  <button
+                    type="button"
+                    className="commit-copy-btn"
+                    onClick={() => void copyAiContext(c)}
+                    title="Copy as AI context (c)"
+                  >
+                    {copyStatus === "copied"
+                      ? "Copied ✓"
+                      : copyStatus === "error"
+                        ? "Copy failed"
+                        : "Copy as AI context"}
+                  </button>
+                </div>
                 <ChangedFiles
                   repoPath={c.repoPath}
                   hash={c.hash}
