@@ -17,6 +17,8 @@ export interface ScanComplete {
 
 export interface TimelineRepoFill {
   commits: CommitSummary[];
+  /** True when these commits were just observed by the file watcher. */
+  fresh: boolean;
 }
 
 export interface CommitSummary {

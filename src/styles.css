@@ -516,7 +516,15 @@ body,
   text-align: center;
   font-size: 11px;
   line-height: 1;
-  opacity: 0.7;
+  opacity: 0.55;
+  transition: color 200ms, opacity 200ms;
+}
+
+.timeline-marker.fresh {
+  color: #5b5df0;
+  opacity: 1;
+  font-size: 13px;
+  text-shadow: 0 0 6px rgba(91, 93, 240, 0.35);
 }
 
 .marker-merge {
@@ -527,6 +535,11 @@ body,
 .marker-tag {
   color: #d99a2b;
   opacity: 0.95;
+}
+
+.timeline-marker.fresh.marker-merge,
+.timeline-marker.fresh.marker-tag {
+  text-shadow: 0 0 6px rgba(91, 93, 240, 0.45);
 }
 
 .timeline-time {

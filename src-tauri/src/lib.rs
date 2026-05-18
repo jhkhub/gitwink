@@ -10,6 +10,7 @@ mod discovery;
 mod git;
 mod settings;
 mod tray;
+mod watcher;
 mod window;
 
 const BLUR_DEBOUNCE_MS: u64 = 80;
@@ -28,6 +29,20 @@ pub fn run() {
             }
 
             app.manage(commands::PendingDiff::default());
+
+            // Spin up the .git watcher and attach it to every repo the
+            // cache already knows about. discover_repos adds new ones
+            // as they're found.
+            if let Ok(watcher_) = watcher::RepoWatcher::start(app.handle().clone()) {
+                if let Ok(conn) = cache::open(app.handle()) {
+                    if let Ok(repos) = cache::list_repos(&conn) {
+                        for r in &repos {
+                            watcher_.add(std::path::Path::new(&r.path));
+                        }
+                    }
+                }
+                app.manage(watcher_);
+            }
 
             tray::setup(app)?;
 

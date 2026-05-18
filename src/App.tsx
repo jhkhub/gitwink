@@ -77,6 +77,10 @@ function App() {
     "all",
   );
 
+  // Fresh-commit tracking — populated by file-watcher pushes, cleared on
+  // panel blur (i.e. "the user has seen this, mark as read on close").
+  const [freshHashes, setFreshHashes] = useState<Set<string>>(() => new Set());
+
   const [openChip, setOpenChip] = useState<
     "repo" | "time" | "authors" | "branch" | null
   >(null);
@@ -127,6 +131,13 @@ function App() {
         setCommits((prev) =>
           selectedRepoPath ? prev : mergeCommits(prev ?? [], p.commits),
         );
+        if (p.fresh && p.commits.length > 0) {
+          setFreshHashes((prev) => {
+            const next = new Set(prev);
+            for (const c of p.commits) next.add(`${c.repoPath}:${c.hash}`);
+            return next;
+          });
+        }
       });
 
       setScanning(true);
@@ -212,6 +223,20 @@ function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBranches]);
+
+  // Clear fresh-commit markers whenever the panel loses focus (= the user
+  // has "seen" what was new). They re-populate as new commits arrive.
+  useEffect(() => {
+    function onBlur() {
+      // Small delay so a tray-context-menu blur or a chip-dropdown click
+      // doesn't wipe everything mid-interaction.
+      window.setTimeout(() => {
+        if (!document.hasFocus()) setFreshHashes(new Set());
+      }, 200);
+    }
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
 
   // ----- ESC layer cascade: chip → expansion (in Timeline) → single-repo → hide panel -----
   useEffect(() => {
@@ -352,6 +377,7 @@ function App() {
             mode={singleMode ? "single" : "all"}
             onSelectRepo={singleMode ? undefined : setSelectedRepoPath}
             branches={singleMode ? branches : undefined}
+            freshHashes={freshHashes}
           />
         )}
       </section>

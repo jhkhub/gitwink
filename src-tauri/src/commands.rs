@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{cache, discovery, git, settings};
+use crate::{cache, discovery, git, settings, watcher};
 
 const MAX_COMMITS_PER_REPO: usize = 10;
 const MAX_COMMITS_PER_REPO_NO_WINDOW: usize = 1_000;
@@ -60,6 +60,10 @@ struct ScanComplete {
 #[derive(Clone, Serialize)]
 struct TimelineRepoFill {
     commits: Vec<git::CommitSummary>,
+    /// True when these commits were just observed by the file watcher
+    /// (i.e. they're genuinely new since the user last looked). False on
+    /// initial discovery sweeps — those rows are pre-existing history.
+    fresh: bool,
 }
 
 #[tauri::command]
@@ -438,8 +442,13 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
                     }
                     let _ = app.emit(
                         "timeline://repo-fill",
-                        TimelineRepoFill { commits },
+                        TimelineRepoFill { commits, fresh: false },
                     );
+                }
+
+                // Attach the file watcher to this newly-discovered repo.
+                if let Some(w) = app.try_state::<watcher::RepoWatcher>() {
+                    w.add(&path);
                 }
             });
         }

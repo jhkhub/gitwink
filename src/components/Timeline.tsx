@@ -20,6 +20,9 @@ interface Props {
   onSelectRepo?: (repoPath: string) => void;
   /** Single-repo mode: list of branches so we can color by branch identity. */
   branches?: BranchInfo[];
+  /** SHAs (formatted "repoPath:hash") that arrived via the file watcher
+   * since the user last closed the panel — render with a fresh marker. */
+  freshHashes?: Set<string>;
 }
 
 function timeAgo(unixSeconds: number): string {
@@ -37,7 +40,13 @@ function marker(c: CommitSummary): { glyph: string; cls: string; title: string }
   return { glyph: "●", cls: "marker-dot", title: "Commit" };
 }
 
-export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
+export function Timeline({
+  commits,
+  mode,
+  onSelectRepo,
+  branches,
+  freshHashes,
+}: Props) {
   const [selected, setSelected] = useState(0);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
@@ -328,7 +337,18 @@ export function Timeline({ commits, mode, onSelectRepo, branches }: Props) {
               {mode === "single" ? (
                 <span className="timeline-lane-spacer" aria-hidden="true" />
               ) : (
-                <span className={"timeline-marker " + m.cls} title={m.title}>
+                <span
+                  className={
+                    "timeline-marker " +
+                    m.cls +
+                    (freshHashes?.has(`${c.repoPath}:${c.hash}`) ? " fresh" : "")
+                  }
+                  title={
+                    freshHashes?.has(`${c.repoPath}:${c.hash}`)
+                      ? `${m.title} (new)`
+                      : m.title
+                  }
+                >
                   {m.glyph}
                 </span>
               )}
