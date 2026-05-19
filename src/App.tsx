@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 
@@ -10,6 +10,7 @@ import { TimeRangeChip } from "./components/TimeRangeChip";
 import {
   currentUpstreamStatus,
   dismissPanel,
+  explicitAddRepo,
   getPinnedRepos,
   listBranches,
   listRecentCommitsCached,
@@ -144,6 +145,10 @@ function App() {
   const [openChip, setOpenChip] = useState<
     "repo" | "time" | "authors" | "branch" | null
   >(null);
+
+  // Drop/paste add-repo flow: inline feedback only, no modal.
+  // `addError` clears itself after 4s so a typo'd path doesn't linger.
+  const [addError, setAddError] = useState<string | null>(null);
 
   const singleMode = selectedRepoPath != null;
 
@@ -360,6 +365,76 @@ function App() {
     };
   }, [singleMode, selectedRepoPath, selectedBranches, windowDays]);
 
+  // Manual add via drag-drop / paste. Returns whether the add succeeded
+  // so the paste handler can clear the clipboard string only on success.
+  // On failure, sets addError to the backend's message ("Not a Git
+  // working tree" etc) for inline display.
+  const tryAddPath = useCallback(async (rawPath: string): Promise<boolean> => {
+    const trimmed = rawPath.trim();
+    if (!trimmed) return false;
+    try {
+      await explicitAddRepo(trimmed);
+      setAddError(null);
+      return true;
+    } catch (err) {
+      setAddError(
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+            ? err.message
+            : "Failed to add repo",
+      );
+      window.setTimeout(() => setAddError(null), 4000);
+      return false;
+    }
+  }, []);
+
+  // Tauri drag-drop. Fires on this window's drop zone (the whole panel).
+  // We listen for the "drop" variant only — "hover"/"cancel" are just
+  // visual cues we'd opt into later. Multi-file drops add each in turn.
+  useEffect(() => {
+    let un: UnlistenFn | undefined;
+    (async () => {
+      type DragDrop = { type: string; paths?: string[] };
+      un = await getCurrentWindow().listen<DragDrop>("tauri://drag-drop", (e) => {
+        if (e.payload.type !== "drop") return;
+        const paths = e.payload.paths ?? [];
+        for (const p of paths) {
+          void tryAddPath(p);
+        }
+      });
+    })();
+    return () => un?.();
+  }, [tryAddPath]);
+
+  // Paste: only act when the user has clearly pasted a path (starts with
+  // a drive letter, slash, or tilde) AND isn't typing into an input/
+  // textarea/contenteditable. This way chip search inputs keep working
+  // normally — paste only adds repos when there's no other use for it.
+  useEffect(() => {
+    function onPaste(e: ClipboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          target.getAttribute("contenteditable") === "true"
+        ) {
+          return;
+        }
+      }
+      const text = e.clipboardData?.getData("text/plain")?.trim() ?? "";
+      if (!text) return;
+      // Heuristic: looks like a Windows drive, POSIX absolute, or home-rel path.
+      if (!/^([a-zA-Z]:[\\\/]|\/|~[\\\/])/.test(text)) return;
+      e.preventDefault();
+      void tryAddPath(text);
+    }
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [tryAddPath]);
+
   // Clear fresh-commit markers whenever the panel loses focus (= the user
   // has "seen" what was new). They re-populate as new commits arrive.
   useEffect(() => {
@@ -503,6 +578,8 @@ function App() {
       <section className="panel-body">
         {filteredCommits == null ? (
           <p className="panel-empty">Loading commits…</p>
+        ) : allRepos.length === 0 && !singleMode ? (
+          <EmptyDropPanel scanning={scanning} addError={addError} />
         ) : (
           <Timeline
             key={singleMode ? `single:${selectedRepoPath}` : "all"}
@@ -513,8 +590,40 @@ function App() {
             freshHashes={freshHashes}
           />
         )}
+        {allRepos.length > 0 && (
+          <div className="panel-footer-hint" title="Drag a repo folder onto the panel, or paste a path">
+            Drop or paste a repo folder to add it
+            {addError && <span className="panel-footer-hint-error"> · {addError}</span>}
+          </div>
+        )}
       </section>
     </main>
+  );
+}
+
+interface EmptyDropPanelProps {
+  scanning: boolean;
+  addError: string | null;
+}
+
+/** First-paint state for a fresh PC where no repos are cached AND the
+ * background scan hasn't found anything yet (no VS Code recents, no
+ * git config hints, etc). Shows a big drop target as the *primary* UI
+ * rather than a blank "Scanning…" screen — the explicit-add path is a
+ * first-class flow, not a hidden escape hatch. */
+function EmptyDropPanel({ scanning, addError }: EmptyDropPanelProps) {
+  return (
+    <div className="empty-drop">
+      <div className="empty-drop-icon" aria-hidden="true">
+        📂
+      </div>
+      <div className="empty-drop-title">Drop a repo folder here</div>
+      <div className="empty-drop-sub">or paste a path (Ctrl+V / Cmd+V)</div>
+      {scanning && (
+        <div className="empty-drop-status">Scanning for repos…</div>
+      )}
+      {addError && <div className="empty-drop-error">{addError}</div>}
+    </div>
   );
 }
 

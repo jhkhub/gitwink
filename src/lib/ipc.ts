@@ -55,6 +55,17 @@ export async function currentUpstreamStatus(
   });
 }
 
+/** Add a repo by absolute path (drag-drop / paste). Backend validates
+ * via git2::Repository::discover (so a sub-folder of a repo also works).
+ * Throws on non-Git paths so the UI can show an inline error. On
+ * success the orchestrator has already emitted `timeline://repo-
+ * discovered`, so the listener in App.tsx picks the new row up
+ * automatically — the resolved Repo is also returned for callers that
+ * want to show synchronous feedback. */
+export async function explicitAddRepo(path: string): Promise<DiscoveredRepo> {
+  return invoke<DiscoveredRepo>("explicit_add_repo", { path });
+}
+
 export async function repoCommits(
   repoPath: string,
   branches: string[] | null,

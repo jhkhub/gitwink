@@ -256,6 +256,7 @@ pub fn run() {
             commands::recent_commits,
             commands::list_branches,
             commands::current_upstream_status,
+            commands::explicit_add_repo,
             commands::repo_commits,
             commands::changed_files,
             commands::file_diff,

@@ -116,6 +116,74 @@ pub fn start(app: AppHandle) -> OrchestratorHandle {
     OrchestratorHandle { cancel }
 }
 
+/// Manually add a repo by path (drag-drop / paste / future file picker).
+/// Validates with git2 (will walk up if the user dropped a subdirectory
+/// of a repo), upserts with primary_source='manual' + user_state='pinned'
+/// + confidence 100 so it stays at the top of the paint order, learns
+/// parent roots, and emits `timeline://repo-discovered` so the frontend
+/// can append a row immediately.
+///
+/// Returns the discovered repo payload on success, or an error string
+/// the frontend can surface inline (e.g. "Not a Git working tree").
+pub fn add_repo_explicit(app: &AppHandle, raw_path: &str) -> Result<DiscoveredRepoPayload> {
+    let path = PathBuf::from(raw_path.trim());
+    if path.as_os_str().is_empty() {
+        return Err(anyhow::anyhow!("empty path"));
+    }
+    let validated = validate_repo_candidate(&path)
+        .ok_or_else(|| anyhow::anyhow!("Not a Git working tree"))?;
+
+    let mut conn = cache::open(app)?;
+    let candidate = Candidate {
+        path: PathBuf::from(&validated.canonical_path),
+        source: DiscoverySource::Manual,
+        confidence: 100,
+        raw_hint: Some(format!("manual:{raw_path}")),
+    };
+    let now = unix_now();
+    {
+        let tx = conn.transaction()?;
+        upsert_discovered_repo(&tx, &validated, &candidate, now)?;
+        // Manual add overrides any pre-existing 'normal' user_state and
+        // promotes the repo to 'pinned' so it survives a tombstone-style
+        // wipe and stays at the top of paint order.
+        tx.execute(
+            "UPDATE repos SET user_state = 'pinned' WHERE canonical_path = ?1",
+            params![&validated.canonical_path],
+        )?;
+        record_repo_source(&tx, &validated, &candidate, now)?;
+        record_path_alias(&tx, &validated, &candidate, now)?;
+        for learned in learn_roots_from_repo(&validated, DiscoverySource::Manual) {
+            upsert_discovery_root(&tx, &learned, &validated.canonical_path, now)?;
+        }
+        // Manual-added paths shouldn't stay on the tombstone list — the
+        // user explicitly asked for them back.
+        tx.execute(
+            "DELETE FROM discovery_tombstones WHERE canonical_path = ?1",
+            params![&validated.canonical_path],
+        )?;
+        tx.commit()?;
+    }
+
+    let payload = DiscoveredRepoPayload {
+        path: validated.canonical_path.clone(),
+        name: validated.name.clone(),
+        source: DiscoverySource::Manual.as_str(),
+        confidence: 100,
+    };
+    let _ = app.emit("timeline://repo-discovered", &payload);
+
+    let _ = append_scan_log(
+        app,
+        &format!(
+            "{} manual_add: path={} name={}",
+            now, validated.canonical_path, validated.name
+        ),
+    );
+
+    Ok(payload)
+}
+
 async fn run_discovery_async(app: AppHandle, cancel: CancellationToken) -> Result<()> {
     let app_for_blocking = app.clone();
     let cancel_for_blocking = cancel.clone();

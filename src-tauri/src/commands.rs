@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::{cache, discovery, git, settings, watcher};
+use crate::{cache, discovery, discovery_orchestrator, git, settings, watcher};
 
 const MAX_COMMITS_PER_REPO: usize = 10;
 const MAX_COMMITS_PER_REPO_NO_WINDOW: usize = 1_000;
@@ -151,6 +151,26 @@ pub async fn current_upstream_status(
 ) -> Result<Option<git::UpstreamStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         git::current_upstream_status(Path::new(&repo_path), branch_name.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Add a repo by path (drag-drop / paste). Wraps
+/// discovery_orchestrator::add_repo_explicit and turns the
+/// validation/Repository::discover error into a frontend-friendly
+/// "Not a Git working tree" string. On success the orchestrator has
+/// already emitted `timeline://repo-discovered` — we return the same
+/// payload so the caller can also handle it synchronously.
+#[tauri::command]
+pub async fn explicit_add_repo(
+    app: AppHandle,
+    path: String,
+) -> Result<discovery_orchestrator::DiscoveredRepoPayload, String> {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        discovery_orchestrator::add_repo_explicit(&app2, &path)
             .map_err(|e| e.to_string())
     })
     .await

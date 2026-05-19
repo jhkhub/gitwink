@@ -42,10 +42,15 @@ pub enum DiscoverySource {
     /// git config `safe.directory`.
     GitConfigSafe,
     /// git config `includeIf.gitdir:<pattern>` — root hint, not repo.
+    /// Collected for Phase 2 root expansion.
+    #[allow(dead_code)]
     GitConfigIncludeIf,
     /// Filesystem walk (Tier 5).
     FsWalk,
-    /// File watcher saw a `.git` directory appear.
+    /// File watcher saw a `.git` directory appear. Hooked up in commit 6
+    /// when the existing watcher promotes its events into orchestrator
+    /// candidates.
+    #[allow(dead_code)]
     Watcher,
 }
 
@@ -408,6 +413,9 @@ pub fn expand_code_workspace(workspace_file: &Path) -> Vec<Candidate> {
 #[derive(Debug, Clone)]
 pub enum GitConfigHint {
     RepoPath(PathBuf),
+    /// `includeIf "gitdir:<pat>"` pattern — collected for future
+    /// Tier 4 expansion (Phase 2). v0.1.1 only acts on RepoPath.
+    #[allow(dead_code)]
     RootPattern(String),
 }
 
