@@ -4,9 +4,30 @@
 
 **Status:** v0.1 — usable. Cold-start friendly tray app.
 
+![gitwink](docs/images/hero.gif)
+
 gitwink lives in your system tray. Click it to glance at recent commit
 activity across **all** your local repos. It is **not** a git client — it
 cannot commit, push, merge, or modify anything. Read-only by design.
+
+## Origin
+
+I used to live in VS Code with GitLens pinned. The branch graph,
+heat-mapped blame, the lens annotations — that *was* my git workflow.
+Then 2025 happened. With Cursor, Claude Code, and Codex doing the
+actual editing, the editor itself became optional. The only thing
+dragging me back was GitLens.
+
+That felt wasteful — booting an entire IDE just to peek at commit
+history. The agent runs the git commands now; I only need to
+sanity-check the result, occasionally, when something looks off.
+gitwink is the smallest possible tool for *that* loop — a tray icon
+that expands into a glance, hands the commit off as AI context, and
+gets out of the way.
+
+No commit. No push. No merge. If I need git surgery, I tell the agent.
+
+## The loop
 
 The 0.5-second confirm loop:
 
@@ -49,6 +70,15 @@ agent commits  →  tray click  →  inline expand  →  "Copy as AI context"
 - Copy as AI context — `c` key or button — produces a markdown block
   with the commit, file list, and (if small enough) full diff, ready
   to paste into Claude / Codex / Cursor.
+
+## Diff window
+
+For the *"wait, did the agent actually do that?"* moments. Click any
+commit and a separate window opens — full file sidebar, side-by-side
+diff with synchronised scroll, inline image preview for binary assets,
+and a singleton that remembers position, size, and maximised state.
+
+![diff window](docs/images/diff.gif)
 
 ## Tech
 
