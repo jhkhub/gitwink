@@ -69,8 +69,15 @@ export function BranchChip({
   }
 
   function renderItem(b: BranchInfo) {
+    // In the "all" meta-state, the All branches row at the top carries
+    // the highlight — individual items shouldn't ALSO look "checked",
+    // because then a user clicking a row to "uncheck it" is met with
+    // the GitLens focus behaviour ("now showing only that one") and
+    // it feels like a different row got deselected. The fix is
+    // visual: no per-item ✓ until the user makes an explicit
+    // selection.
     const isSelected =
-      selected === "all" || (selected as string[]).includes(b.refName);
+      selected !== "all" && (selected as string[]).includes(b.refName);
     return (
       <button
         key={b.refName}

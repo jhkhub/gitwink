@@ -1,4 +1,5 @@
 import type { LaneGraphData } from "../lib/lanes";
+import type { CommitSummary } from "../types";
 
 interface Props {
   graph: LaneGraphData;
@@ -8,6 +9,22 @@ interface Props {
 
 const LANE_WIDTH = 12;
 const CIRCLE_R = 3.5;
+
+/** Same glyph + label set the all-mode marker uses, so hovering a DAG
+ * node in single-repo mode conveys the same info — type, summary, and
+ * a short hash for orientation. Single-repo mode renders the marker
+ * column as a spacer (the SVG IS the marker), so without this title
+ * the hover affordance is silently lost. */
+function commitTooltip(commit: CommitSummary): string {
+  const glyph = commit.isTagged ? "★" : commit.isMerge ? "◆" : "●";
+  const label = commit.isTagged
+    ? "Tagged commit"
+    : commit.isMerge
+      ? "Merge commit"
+      : "Commit";
+  const summary = commit.summary || "(no summary)";
+  return `${glyph} ${label} · ${commit.shortHash}\n${summary}`;
+}
 
 export function LaneGraph({ graph, rowYs }: Props) {
   const width = Math.max(graph.totalLanes * LANE_WIDTH, LANE_WIDTH);
@@ -57,7 +74,9 @@ export function LaneGraph({ graph, rowYs }: Props) {
           fill={lc.color}
           stroke="rgba(0,0,0,0.22)"
           strokeWidth={0.5}
-        />
+        >
+          <title>{commitTooltip(lc.commit)}</title>
+        </circle>
       ))}
     </svg>
   );

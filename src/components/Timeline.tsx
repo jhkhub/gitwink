@@ -34,6 +34,21 @@ function timeAgo(unixSeconds: number): string {
   return `${Math.floor(diff / 86_400)}d`;
 }
 
+/** Full ISO-ish local datetime for hover tooltips. Uses 24-hour
+ * 2-digit components in the user's locale so it's unambiguous
+ * regardless of region (no AM/PM, no DD/MM vs MM/DD guessing). */
+function formatFullTime(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleString(undefined, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
 function marker(c: CommitSummary): { glyph: string; cls: string; title: string } {
   if (c.isTagged) return { glyph: "★", cls: "marker-tag", title: "Tagged commit" };
   if (c.isMerge) return { glyph: "◆", cls: "marker-merge", title: "Merge commit" };
@@ -352,7 +367,12 @@ export function Timeline({
                   {m.glyph}
                 </span>
               )}
-              <span className="timeline-time">{timeAgo(c.timestamp)}</span>
+              <span
+                className="timeline-time"
+                title={formatFullTime(c.timestamp)}
+              >
+                {timeAgo(c.timestamp)}
+              </span>
               {showRepo && (
                 <span
                   className={
