@@ -8,6 +8,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 mod cache;
 mod commands;
 mod discovery;
+mod discovery_orchestrator;
 mod discovery_sources;
 mod git;
 mod settings;
@@ -57,6 +58,16 @@ pub fn run() {
             }
 
             tray::setup(app)?;
+
+            // Prewarm discovery in the background. Reads cache + IDE
+            // recents + git config + (first-run only) full fs walk and
+            // fills cache so the next panel-open paints cache hits
+            // immediately. No UI events in this commit; commit 4 wires
+            // those up. Returns a handle holding a CancellationToken
+            // so we *could* cancel on app exit; the task is also
+            // self-bounded by per-tier deadlines + caps.
+            let _orchestrator = discovery_orchestrator::start(app.handle().clone());
+            app.manage(_orchestrator);
 
             // Global hotkey to summon the panel from anywhere, even when
             // tray-hidden. Default CmdOrCtrl+Shift+G ("G" for gitwink),
