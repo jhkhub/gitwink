@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{Listener, Manager, WindowEvent};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 mod cache;
 mod commands;
@@ -19,7 +20,17 @@ const BLUR_DEBOUNCE_MS: u64 = 80;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    // Toggle on key-down only; ignore Released so a single
+                    // press doesn't fire twice.
+                    if event.state() == ShortcutState::Pressed {
+                        window::toggle_panel(app);
+                    }
+                })
+                .build(),
+        )
         .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -45,6 +56,26 @@ pub fn run() {
             }
 
             tray::setup(app)?;
+
+            // Global hotkey to summon the panel from anywhere, even when
+            // tray-hidden. CmdOrCtrl+Shift+G — "G" for git/gitwink, Shift
+            // to avoid clashing with common single-modifier app hotkeys.
+            // Best-effort: if another running app already holds this
+            // binding (Windows registers globally, so first-bind wins) we
+            // log and continue rather than fail startup.
+            match "CmdOrCtrl+Shift+G".parse::<Shortcut>() {
+                Ok(panel_shortcut) => {
+                    if let Err(e) = app.global_shortcut().register(panel_shortcut) {
+                        eprintln!(
+                            "gitwink: failed to register global hotkey CmdOrCtrl+Shift+G ({e}); \
+                             the tray icon still works as a fallback"
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("gitwink: invalid global hotkey spec: {e}");
+                }
+            }
 
             // Best-effort LRU GC of the diff cache on startup. Off the main
             // thread; ignore errors (cache may not exist yet on first run).
