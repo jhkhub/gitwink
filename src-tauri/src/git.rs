@@ -501,9 +501,17 @@ pub fn file_diff(repo_path: &Path, commit_hash: &str, file_path: &str) -> Result
 }
 
 /// Cheap revwalk-based commit count + tip activity time for a single ref
-/// tip. Capped at 5,000 — the count is only a UI hint, and unbounded walks
-/// would block branch-picker render on monorepos.
-fn ref_count_and_activity(repo: &Repository, tip: Oid) -> (usize, i64) {
+/// tip. The cap exists so a deep history can't block the branch-picker
+/// render. Local refs are the user's working surface — give them the more
+/// generous cap. Remote refs are mostly here so the user can focus on
+/// them; the count is a secondary cue, so we cap much harder. With 100
+/// remote refs on a monorepo this difference (100×500 vs 100×5_000) is
+/// the difference between "branch list ready immediately" and "branch
+/// chip lags for a second".
+const LOCAL_REF_COUNT_CAP: usize = 5_000;
+const REMOTE_REF_COUNT_CAP: usize = 500;
+
+fn ref_count_and_activity(repo: &Repository, tip: Oid, cap: usize) -> (usize, i64) {
     let mut count = 0usize;
     let mut last_activity: i64 = 0;
     if let Ok(mut rw) = repo.revwalk() {
@@ -518,8 +526,8 @@ fn ref_count_and_activity(repo: &Repository, tip: Oid) -> (usize, i64) {
                         last_activity = c.time().seconds();
                     }
                 }
-                if i >= 5_000 {
-                    count = 5_001;
+                if i >= cap {
+                    count = cap + 1;
                     break;
                 }
             }
@@ -553,7 +561,8 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
                 continue;
             };
             let Some(tip) = r.target() else { continue };
-            let (count, last_activity) = ref_count_and_activity(&repo, tip);
+            let (count, last_activity) =
+                ref_count_and_activity(&repo, tip, LOCAL_REF_COUNT_CAP);
             out.push(BranchInfo {
                 name: name.clone(),
                 ref_name: format!("refs/heads/{name}"),
@@ -577,7 +586,8 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
                 continue;
             }
             let Some(tip) = r.target() else { continue };
-            let (count, last_activity) = ref_count_and_activity(&repo, tip);
+            let (count, last_activity) =
+                ref_count_and_activity(&repo, tip, REMOTE_REF_COUNT_CAP);
             out.push(BranchInfo {
                 name: name.clone(),
                 ref_name: format!("refs/remotes/{name}"),
@@ -991,16 +1001,21 @@ pub fn repo_commits(
     // with the same window filter — this is the GitLens-killer feature.
     let mut remote_tips: Vec<RemoteTip> = Vec::new();
 
-    let explicit_names: Option<&[String]> = match branches {
-        Some(s) if !s.is_empty() => Some(s),
-        _ => None,
-    };
+    // explicit_mode = the caller passed a list at all (Some, including the
+    // empty slice). An empty explicit list is "the user deselected every
+    // branch" and must yield zero rows, NOT fall back to all-mode.
+    let explicit_mode = branches.is_some();
+    let explicit_names: &[String] = branches.unwrap_or(&[]);
 
-    if let Some(names) = explicit_names {
+    if explicit_mode && explicit_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if explicit_mode {
         // BranchChip selection — names may be either full ref paths
         // (`refs/heads/...` / `refs/remotes/...`) or bare shorthand for
         // local branches (callers from before the multi-ref change).
-        for name in names {
+        for name in explicit_names {
             let full = if name.starts_with("refs/") {
                 name.clone()
             } else {
@@ -1053,6 +1068,12 @@ pub fn repo_commits(
     let remote_badges = build_remote_badge_map(&remote_tips);
 
     if pushed == 0 && remote_tips.is_empty() {
+        // Explicit mode with all refs stale/invalid: return empty rather
+        // than silently rerouting the user to HEAD history — they asked
+        // for specific refs, so "nothing matches" is the honest answer.
+        if explicit_mode {
+            return Ok(Vec::new());
+        }
         let Ok(head) = repo.head() else {
             return Ok(Vec::new());
         };

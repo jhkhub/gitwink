@@ -54,12 +54,11 @@ export function BranchChip({
 
   function toggle(refName: string) {
     if (selected === "all") {
-      // First explicit click: every branch is currently "on", so toggling
-      // one means "everything except this one".
-      const others = branches
-        .map((b) => b.refName)
-        .filter((r) => r !== refName);
-      onChange(others);
+      // GitLens / IDE sidebar pattern: clicking a branch from the "all"
+      // state means "focus on THIS one". The previous "everything except
+      // this one" behaviour was a multi-select-with-checkboxes mental
+      // model that doesn't match what users expect from a branch filter.
+      onChange([refName]);
       return;
     }
     const set = new Set(selected);

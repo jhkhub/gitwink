@@ -247,33 +247,31 @@ function App() {
     };
   }, [windowDays, singleMode]);
 
-  // ----- single-repo mode: load branches + commits -----
+  // ----- single-repo mode: branch list (depends ONLY on repo) -----
+  // Refreshing the branch list when window changes is wasteful — the
+  // available branches don't depend on the time window. Repo changes
+  // also reset selectedBranches so the commits effect re-fires cleanly
+  // with the fresh "all" filter rather than a stale per-repo selection.
   useEffect(() => {
     if (!singleMode) {
       setBranches([]);
       setSelectedBranches("all");
       return;
     }
+    // Repo just entered or changed — clear stale selection from any
+    // previous repo before kicking off the branch fetch.
+    setSelectedBranches("all");
     let cancelled = false;
     (async () => {
       try {
         const bs = await listBranches(selectedRepoPath!);
         if (!cancelled) setBranches(bs);
       } catch {}
-      try {
-        const cs = await repoCommits(
-          selectedRepoPath!,
-          null,
-          toWindowParam(windowDays),
-        );
-        if (!cancelled) setCommits(cs);
-      } catch {}
     })();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedRepoPath, windowDays]);
+  }, [singleMode, selectedRepoPath]);
 
   // ----- single-repo mode: upstream status (selection-aware) -----
   // Refetches whenever the repo OR the BranchChip selection changes. Logic:
@@ -317,16 +315,26 @@ function App() {
     };
   }, [selectedRepoPath, singleMode, selectedBranches]);
 
-  // ----- single-repo mode: refresh commits when branches selection changes -----
+  // ----- single-repo mode: commits (depends on repo, branches, window) -----
+  // All three dimensions of the filter must be in the dep list — otherwise
+  // changing windowDays or selectedRepoPath while a branch filter is
+  // active clobbers the filter (the BranchChip shows "feature" but
+  // Timeline silently flips to all-branches). Empty explicit selection
+  // returns [] immediately without hitting the backend so "No branches"
+  // really means no rows.
   useEffect(() => {
-    if (!singleMode) return;
+    if (!singleMode || !selectedRepoPath) return;
+    if (selectedBranches !== "all" && selectedBranches.length === 0) {
+      setCommits([]);
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
         const branchParam =
           selectedBranches === "all" ? null : selectedBranches;
         const cs = await repoCommits(
-          selectedRepoPath!,
+          selectedRepoPath,
           branchParam,
           toWindowParam(windowDays),
         );
@@ -336,8 +344,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedBranches]);
+  }, [singleMode, selectedRepoPath, selectedBranches, windowDays]);
 
   // Clear fresh-commit markers whenever the panel loses focus (= the user
   // has "seen" what was new). They re-populate as new commits arrive.
