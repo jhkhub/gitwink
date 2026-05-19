@@ -9,14 +9,13 @@ import { Timeline } from "./components/Timeline";
 import { TimeRangeChip } from "./components/TimeRangeChip";
 import {
   currentUpstreamStatus,
-  discoverRepos,
   dismissPanel,
   getPinnedRepos,
   listBranches,
   listRecentCommitsCached,
   listRepos,
-  onScanComplete,
-  onScanProgress,
+  onOrchestratorProgress,
+  onRepoDiscovered,
   onTimelineRepoFill,
   recentCommits,
   repoCommits,
@@ -159,9 +158,9 @@ function App() {
   // ----- bootstrap (All-repos timeline) -----
   useEffect(() => {
     let mounted = true;
-    let unP: UnlistenFn | undefined;
-    let unC: UnlistenFn | undefined;
-    let unF: UnlistenFn | undefined;
+    let unProgress: UnlistenFn | undefined;
+    let unDiscovered: UnlistenFn | undefined;
+    let unFill: UnlistenFn | undefined;
 
     (async () => {
       try {
@@ -182,19 +181,39 @@ function App() {
         if (mounted) setPinnedRepos(pins);
       } catch {}
 
-      unP = await onScanProgress((p) => {
-        if (mounted) setDiscoveredCount(p.found);
-      });
-      unC = await onScanComplete(async (p) => {
+      // Orchestrator owns discovery now — we just listen.
+      // `scanning` is the UI flag for the progress strip + tray; the
+      // tray icon's own tooltip is updated by Rust directly.
+      setScanning(true);
+      unProgress = await onOrchestratorProgress((p) => {
         if (!mounted) return;
-        setDiscoveredCount(p.count);
-        setScanning(false);
+        setDiscoveredCount(p.reposFound);
+        setScanning(p.state === "scanning");
+      });
+
+      // Per-repo discovery: merge into allRepos so the repo chip
+      // dropdown lights up as repos are validated. Refresh cached
+      // commits opportunistically so the timeline picks up rows from
+      // the newly-discovered repo without a manual reload.
+      unDiscovered = await onRepoDiscovered(async (p) => {
+        if (!mounted) return;
+        setAllRepos((prev) => {
+          if (prev.some((r) => r.path === p.path)) return prev;
+          const next = [...prev, { path: p.path, name: p.name }];
+          // Keep stable display order to avoid jitter in the chip dropdown.
+          next.sort((a, b) => a.name.localeCompare(b.name));
+          return next;
+        });
+        setDiscoveredCount((prev) => (prev ?? 0) + 1);
         try {
-          const repos = await listRepos();
-          if (mounted) setAllRepos(repos);
+          const refreshed = await listRecentCommitsCached(
+            toWindowParam(windowDays),
+          );
+          if (mounted) setCommits(refreshed);
         } catch {}
       });
-      unF = await onTimelineRepoFill((p) => {
+
+      unFill = await onTimelineRepoFill((p) => {
         if (!mounted) return;
         // Only merge into the All-repos timeline; ignore while in single mode.
         // Read the *current* selectedRepoPath via ref — the value captured in
@@ -212,18 +231,13 @@ function App() {
           });
         }
       });
-
-      setScanning(true);
-      void discoverRepos().catch(() => {
-        if (mounted) setScanning(false);
-      });
     })();
 
     return () => {
       mounted = false;
-      unP?.();
-      unC?.();
-      unF?.();
+      unProgress?.();
+      unDiscovered?.();
+      unFill?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

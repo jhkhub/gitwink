@@ -15,6 +15,27 @@ export interface ScanComplete {
   count: number;
 }
 
+/** New v0.1.1 orchestrator → frontend channel. Replaces the old
+ * `scan://progress` / `scan://complete` pair for the tiered scanner.
+ * `state` is "scanning" while the prewarm task is alive and "complete"
+ * once it finishes; `repos_found` is the validated-repo count so far. */
+export interface OrchestratorScanProgress {
+  reposFound: number;
+  state: "scanning" | "complete";
+  errors: number;
+}
+
+/** New v0.1.1 orchestrator → frontend channel. Fired once per validated
+ * repo as the prewarm task discovers and caches it. `source` is a debug
+ * hint (vscode / cursor / git_config_safe / fs_walk / manual / ...) —
+ * UI surfaces it in tooltips only. */
+export interface DiscoveredRepo {
+  path: string;
+  name: string;
+  source: string;
+  confidence: number;
+}
+
 export interface TimelineRepoFill {
   commits: CommitSummary[];
   /** True when these commits were just observed by the file watcher. */

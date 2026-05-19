@@ -16,7 +16,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use tauri::{AppHandle, Manager};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager};
 use tokio_util::sync::CancellationToken;
 
 use crate::cache;
@@ -24,6 +25,30 @@ use crate::discovery;
 use crate::discovery_sources::{
     self, Candidate, DiscoverySource, GitConfigHint,
 };
+
+/// Payload mirroring `cache::Repo` plus the source the orchestrator
+/// learned the repo from. Frontend uses `name` + `path` directly and
+/// `source` only for debug tooltips. camelCase serialization matches
+/// existing event payloads.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredRepoPayload {
+    pub path: String,
+    pub name: String,
+    pub source: &'static str,
+    pub confidence: i32,
+}
+
+/// Streamed every time the validation loop hits a milestone or finishes.
+/// `state` is "scanning" while the pipeline is alive and "complete" once
+/// the final scan.log line is written.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanProgressPayload {
+    pub repos_found: usize,
+    pub state: &'static str,
+    pub errors: usize,
+}
 
 /// Meta-table key that tracks whether the first-launch full scan has
 /// already completed. Lives in cache.db (not settings.json) so wiping
@@ -130,10 +155,31 @@ async fn run_discovery_async(app: AppHandle, cancel: CancellationToken) -> Resul
     }
 }
 
+/// Update the tray tooltip to reflect the current scan state. Best-
+/// effort: tray might not exist yet or the tooltip API might fail on
+/// some Linux distros — log to stderr if so but don't propagate.
+fn set_tray_tooltip(app: &AppHandle, text: &str) {
+    if let Some(tray) = app.tray_by_id("main") {
+        if let Err(e) = tray.set_tooltip(Some(text)) {
+            eprintln!("tray tooltip update failed: {e}");
+        }
+    }
+}
+
+/// Format the tooltip exactly as the spec requires.
+fn tooltip_text(repos_found: usize, state: &str, errors: usize) -> String {
+    match (state, errors) {
+        ("scanning", _) => format!("gitwink — scanning... {repos_found} found"),
+        ("complete", 0) => format!("gitwink — {repos_found} repositories"),
+        ("complete", n) => format!("gitwink — {repos_found} repositories, {n} issues"),
+        _ => "gitwink".to_string(),
+    }
+}
+
 /// Pull candidates from every tier, dedup, validate, upsert. Returns
 /// (candidates_seen, candidates_valid).
 fn run_pipeline_sync(
-    _app: &AppHandle,
+    app: &AppHandle,
     conn: &mut Connection,
     cancel: CancellationToken,
     is_first_run: bool,
@@ -240,29 +286,76 @@ fn run_pipeline_sync(
     let now = unix_now();
     let mut valid = 0usize;
     let mut parent_learn_count = 0usize;
-    let tx = conn.transaction()?;
-    for candidate in to_validate {
-        if cancel.is_cancelled() {
-            break;
-        }
-        let Some(validated) = validate_repo_candidate(&candidate.path) else {
-            continue;
-        };
-        upsert_discovered_repo(&tx, &validated, &candidate, now)?;
-        record_repo_source(&tx, &validated, &candidate, now)?;
-        record_path_alias(&tx, &validated, &candidate, now)?;
+    let mut last_tooltip_at = Instant::now() - Duration::from_secs(1);
+    let mut emit_buffer: Vec<DiscoveredRepoPayload> = Vec::new();
 
-        if parent_learn_count < PARENT_LEARNING_CAP {
-            for learned in learn_roots_from_repo(&validated, candidate.source) {
-                upsert_discovery_root(&tx, &learned, &validated.canonical_path, now)?;
-                parent_learn_count += 1;
+    set_tray_tooltip(app, &tooltip_text(0, "scanning", 0));
+    emit_scan_progress(app, 0, "scanning", 0);
+
+    {
+        let tx = conn.transaction()?;
+        for candidate in to_validate {
+            if cancel.is_cancelled() {
+                break;
+            }
+            let Some(validated) = validate_repo_candidate(&candidate.path) else {
+                continue;
+            };
+            upsert_discovered_repo(&tx, &validated, &candidate, now)?;
+            record_repo_source(&tx, &validated, &candidate, now)?;
+            record_path_alias(&tx, &validated, &candidate, now)?;
+
+            if parent_learn_count < PARENT_LEARNING_CAP {
+                for learned in learn_roots_from_repo(&validated, candidate.source) {
+                    upsert_discovery_root(&tx, &learned, &validated.canonical_path, now)?;
+                    parent_learn_count += 1;
+                }
+            }
+            valid += 1;
+
+            // Stage the payload — we emit it AFTER the transaction
+            // commits so listeners never see a row that might roll back.
+            emit_buffer.push(DiscoveredRepoPayload {
+                path: validated.canonical_path.clone(),
+                name: validated.name.clone(),
+                source: candidate.source.as_str(),
+                confidence: candidate.confidence,
+            });
+
+            // Tooltip + progress throttle: spec says max one update per
+            // 500ms so a fast scan doesn't thrash the tray. The last
+            // tick of the scan is emitted explicitly outside the loop.
+            if last_tooltip_at.elapsed() >= Duration::from_millis(500) {
+                set_tray_tooltip(app, &tooltip_text(valid, "scanning", 0));
+                emit_scan_progress(app, valid, "scanning", 0);
+                last_tooltip_at = Instant::now();
             }
         }
-        valid += 1;
+        tx.commit()?;
     }
-    tx.commit()?;
+
+    // Flush per-repo events AFTER commit. Frontend can append these to
+    // its row list — the cache row they reference is now durable.
+    for payload in emit_buffer {
+        let _ = app.emit("timeline://repo-discovered", &payload);
+    }
+
+    // Final tick.
+    set_tray_tooltip(app, &tooltip_text(valid, "complete", 0));
+    emit_scan_progress(app, valid, "complete", 0);
 
     Ok((seen, valid))
+}
+
+fn emit_scan_progress(app: &AppHandle, repos_found: usize, state: &'static str, errors: usize) {
+    let _ = app.emit(
+        "scan-progress",
+        &ScanProgressPayload {
+            repos_found,
+            state,
+            errors,
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------

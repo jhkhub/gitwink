@@ -6,6 +6,8 @@ import type {
   ChangedFile,
   CommitFileBlobs,
   CommitSummary,
+  DiscoveredRepo,
+  OrchestratorScanProgress,
   Repo,
   ScanComplete,
   ScanProgress,
@@ -159,6 +161,26 @@ export async function onScanComplete(
   cb: (p: ScanComplete) => void,
 ): Promise<UnlistenFn> {
   return listen<ScanComplete>("discovery://complete", (e) => cb(e.payload));
+}
+
+/** v0.1.1 orchestrator scan progress. Fires roughly every 500ms while
+ * the prewarm task is running and once more with state="complete" at
+ * the end. Use this for the panel progress strip and tray tooltip
+ * mirroring; the older `onScanProgress`/`onScanComplete` channels are
+ * still supported for the manual `discover_repos` IPC path. */
+export async function onOrchestratorProgress(
+  cb: (p: OrchestratorScanProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<OrchestratorScanProgress>("scan-progress", (e) => cb(e.payload));
+}
+
+/** v0.1.1 per-repo discovery event. Fires once per validated repo as
+ * the orchestrator caches it. Frontend appends to its repo list and
+ * triggers a recent-commits refetch if the repo isn't already known. */
+export async function onRepoDiscovered(
+  cb: (p: DiscoveredRepo) => void,
+): Promise<UnlistenFn> {
+  return listen<DiscoveredRepo>("timeline://repo-discovered", (e) => cb(e.payload));
 }
 
 export async function onTimelineRepoFill(
