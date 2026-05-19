@@ -95,6 +95,143 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
         "ALTER TABLE commits ADD COLUMN remote_tip_extra_count INTEGER NOT NULL DEFAULT 0",
         [],
     );
+
+    // v0.1.1 discovery lifecycle migration. `repos` gains identity +
+    // status + provenance fields so the tiered scanner can express
+    // "this row came from VS Code recents, confidence 80, last verified
+    // 3 minutes ago, currently missing on disk." All ALTERs are
+    // idempotent ("duplicate column" errors swallowed on warm DBs).
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN canonical_path TEXT", []);
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN gitdir_path TEXT", []);
+    let _ = conn.execute(
+        "ALTER TABLE repos ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE repos ADD COLUMN user_state TEXT NOT NULL DEFAULT 'normal'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE repos ADD COLUMN primary_source TEXT NOT NULL DEFAULT 'unknown'",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE repos ADD COLUMN confidence INTEGER NOT NULL DEFAULT 50",
+        [],
+    );
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN first_seen_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN last_verified_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN missing_since INTEGER", []);
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN removed_at INTEGER", []);
+    let _ = conn.execute("ALTER TABLE repos ADD COLUMN last_emit_at INTEGER", []);
+    let _ = conn.execute(
+        "ALTER TABLE repos ADD COLUMN repo_kind TEXT NOT NULL DEFAULT 'workdir'",
+        [],
+    );
+
+    // Backfill canonical_path for rows from older versions so the
+    // unique index has something to grab onto.
+    let _ = conn.execute(
+        "UPDATE repos SET canonical_path = path WHERE canonical_path IS NULL",
+        [],
+    );
+
+    conn.execute_batch(
+        r#"
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_repos_canonical_path
+            ON repos(canonical_path);
+        CREATE INDEX IF NOT EXISTS idx_repos_paint_order
+            ON repos(user_state, status, confidence, last_seen_at);
+
+        -- Per-source provenance: a repo can be known to multiple sources
+        -- (VS Code recents AND fs walk AND manual), each with its own
+        -- confidence + last-seen so source-level decay/learning works.
+        CREATE TABLE IF NOT EXISTS repo_sources (
+            repo_canonical_path TEXT NOT NULL,
+            source TEXT NOT NULL,
+            source_path TEXT,
+            source_mtime INTEGER,
+            raw_hint TEXT,
+            confidence INTEGER NOT NULL,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            last_success_at INTEGER,
+            fail_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(repo_canonical_path, source)
+        );
+
+        -- Learned scan roots. When we find a repo at C:\k2\keymall\workspace
+        -- we learn C:\k2\keymall (score 0.95) and conservatively C:\k2
+        -- (score 0.65), so next pass finds siblings without making the
+        -- user re-enter paths.
+        CREATE TABLE IF NOT EXISTS discovery_roots (
+            root_path TEXT PRIMARY KEY,
+            root_kind TEXT NOT NULL,
+            created_from_repo TEXT,
+            score REAL NOT NULL,
+            max_depth INTEGER NOT NULL,
+            entry_budget INTEGER NOT NULL,
+            repo_hits INTEGER NOT NULL DEFAULT 0,
+            miss_count INTEGER NOT NULL DEFAULT 0,
+            last_scan_at INTEGER,
+            cooldown_until INTEGER,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_discovery_roots_priority
+            ON discovery_roots(enabled, cooldown_until, score DESC, last_scan_at);
+
+        -- "User hid this repo, do not auto-rediscover it." Survives even if
+        -- a tier source still reports the path next scan.
+        CREATE TABLE IF NOT EXISTS discovery_tombstones (
+            canonical_path TEXT PRIMARY KEY,
+            removed_at INTEGER NOT NULL,
+            reason TEXT NOT NULL,
+            last_known_name TEXT,
+            last_known_source TEXT
+        );
+
+        -- observed path → canonical path mapping, so symlinks/case
+        -- variants from different IDEs don't double-count.
+        CREATE TABLE IF NOT EXISTS path_aliases (
+            observed_path TEXT NOT NULL,
+            canonical_path TEXT NOT NULL,
+            source TEXT NOT NULL,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            PRIMARY KEY(observed_path, source)
+        );
+
+        -- Per-tier-run audit log. Mostly for debugging "why didn't my
+        -- repo appear?" — keep tiny, GC the oldest entries periodically.
+        CREATE TABLE IF NOT EXISTS discovery_runs (
+            run_id TEXT PRIMARY KEY,
+            tier TEXT NOT NULL,
+            started_at INTEGER NOT NULL,
+            finished_at INTEGER,
+            budget_ms INTEGER,
+            candidates_seen INTEGER NOT NULL DEFAULT 0,
+            candidates_valid INTEGER NOT NULL DEFAULT 0,
+            repos_emitted INTEGER NOT NULL DEFAULT 0,
+            cancelled INTEGER NOT NULL DEFAULT 0
+        );
+
+        -- One-row table for app-wide flags (e.g. first-run scan completion).
+        -- Lives in cache.db rather than settings.json so a wiped cache
+        -- correctly re-triggers the first-run scan.
+        CREATE TABLE IF NOT EXISTS meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        "#,
+    )?;
+
+    // PRAGMA user_version = 2 marks schema generation 2 (post v0.1.0).
+    // We don't gate behaviour on this yet, but future migrations can.
+    let _ = conn.pragma_update(None, "user_version", 2_i64);
+
     Ok(conn)
 }
 
@@ -119,11 +256,24 @@ pub fn upsert_repos(conn: &mut Connection, repos: &[Repo]) -> Result<()> {
     {
         let mut stmt = tx.prepare(
             r#"
-            INSERT INTO repos (path, name, discovered_at, last_seen_at)
-            VALUES (?1, ?2, ?3, ?3)
+            INSERT INTO repos (
+                path, name, discovered_at, last_seen_at,
+                canonical_path, first_seen_at, last_verified_at
+            )
+            VALUES (?1, ?2, ?3, ?3, ?1, ?3, ?3)
             ON CONFLICT(path) DO UPDATE SET
                 name = excluded.name,
-                last_seen_at = excluded.last_seen_at
+                last_seen_at = excluded.last_seen_at,
+                last_verified_at = excluded.last_verified_at,
+                -- Restore from missing if the path showed up again
+                status = CASE
+                    WHEN repos.status = 'missing' THEN 'active'
+                    ELSE repos.status
+                END,
+                missing_since = CASE
+                    WHEN repos.status = 'missing' THEN NULL
+                    ELSE repos.missing_since
+                END
             "#,
         )?;
         for r in repos {
@@ -131,6 +281,38 @@ pub fn upsert_repos(conn: &mut Connection, repos: &[Repo]) -> Result<()> {
         }
     }
     tx.commit()?;
+    Ok(())
+}
+
+// ----- meta (app-wide flags lived in cache.db so wiping cache resets them) -----
+
+/// Read a value from the meta table. None if the key has never been set.
+#[allow(dead_code)] // wired up by orchestrator
+pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let res = conn.query_row(
+        "SELECT value FROM meta WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    );
+    match res {
+        Ok(v) => Ok(Some(v)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Upsert a value into the meta table.
+#[allow(dead_code)] // wired up by orchestrator
+pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO meta (key, value, updated_at) VALUES (?1, ?2, ?3)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        "#,
+        params![key, value, unix_now()],
+    )?;
     Ok(())
 }
 
