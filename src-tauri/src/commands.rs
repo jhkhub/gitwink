@@ -11,6 +11,14 @@ const MAX_COMMITS_PER_REPO_NO_WINDOW: usize = 1_000;
 const TIMELINE_WINDOW_DAYS: i64 = 7;
 const TIMELINE_MAX_TOTAL: usize = 50;
 const TIMELINE_MAX_TOTAL_NO_WINDOW: usize = 5_000;
+/// In single-repo mode the user has explicitly drilled into one repo, so
+/// the per-repo cap that protects the all-repos timeline (= 10) is way too
+/// low. They expect the window to dominate: a 30d view should look like
+/// 30d of work, not 10 rows of last week. These caps act as a safety net
+/// against monorepos with thousands of commits per month, not as the
+/// primary trimming knob.
+const SINGLE_REPO_MAX_COMMITS_WINDOWED: usize = 500;
+const SINGLE_REPO_MAX_COMMITS_NO_WINDOW: usize = 2_000;
 
 fn cutoff_for(window_days: Option<i64>) -> i64 {
     match window_days {
@@ -24,6 +32,19 @@ fn per_repo_cap(window_days: Option<i64>) -> usize {
         MAX_COMMITS_PER_REPO_NO_WINDOW
     } else {
         MAX_COMMITS_PER_REPO
+    }
+}
+
+/// Cap used by `repo_commits` (single-repo drill-in mode). Different from
+/// `per_repo_cap` because the user has explicitly focused on one repo, so
+/// the "one row per repo so the all-repos timeline stays scannable"
+/// rationale doesn't apply. The window should dominate; this is just a
+/// safety net against monorepos with thousands of commits in the period.
+fn single_repo_cap(window_days: Option<i64>) -> usize {
+    if window_days.is_none() {
+        SINGLE_REPO_MAX_COMMITS_NO_WINDOW
+    } else {
+        SINGLE_REPO_MAX_COMMITS_WINDOWED
     }
 }
 
@@ -372,7 +393,7 @@ pub async fn repo_commits(
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<git::CommitSummary>, String> {
         let cutoff = cutoff_for(window_days);
-        let cap = per_repo_cap(window_days);
+        let cap = single_repo_cap(window_days);
         let branches_slice: Option<&[String]> = branches.as_deref();
         let commits = git::repo_commits(Path::new(&repo_path), branches_slice, cap, cutoff)
             .map_err(|e| e.to_string())?;

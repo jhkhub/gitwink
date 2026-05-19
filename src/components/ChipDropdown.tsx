@@ -42,6 +42,12 @@ export function ChipDropdown({
     };
   }, [open, onClose]);
 
+  // When the label itself is a string, surface it as the button title so
+  // the truncated/ellipsised text still has a hover-reveal — caller can
+  // still override with an explicit `title` prop.
+  const effectiveTitle =
+    title ?? (typeof label === "string" ? label : undefined);
+
   return (
     <div className="chip-wrap" data-chip={id} ref={ref}>
       <button
@@ -51,7 +57,7 @@ export function ChipDropdown({
           if (!disabled) onToggle();
         }}
         disabled={disabled}
-        title={title}
+        title={effectiveTitle}
       >
         <span className="chip-label">{label}</span>
         <span className="chip-caret">▾</span>

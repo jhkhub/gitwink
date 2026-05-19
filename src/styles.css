@@ -194,6 +194,18 @@ body,
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
+  /* Cap individual chip width so a long branch / repo name can't push
+   * the ✕ off the header. Full text stays available via the chip's
+   * title attribute. */
+  max-width: 160px;
+  min-width: 0;
+}
+
+.chip-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .chip:hover {
@@ -250,6 +262,7 @@ body,
 .chip-caret {
   font-size: 9px;
   opacity: 0.55;
+  flex-shrink: 0;
 }
 
 .chip-dropdown {
