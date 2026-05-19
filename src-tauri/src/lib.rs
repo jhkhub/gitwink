@@ -8,6 +8,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 mod cache;
 mod commands;
 mod discovery;
+mod discovery_sources;
 mod git;
 mod settings;
 mod tray;
