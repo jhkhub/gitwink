@@ -33,3 +33,7 @@ Thumbs.db
 *.db-wal
 *.db-shm
 .claude/
+
+# gpt-pro-submit workspace hook (config + ephemeral payload — personal)
+.gptprosubmit/
+.tmp_review/
