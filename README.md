@@ -1,16 +1,29 @@
 # gitwink
 
-**English** · [한국어](README.ko.md)
+**English** · [한국어](README.ko.md) · [日本語](README.ja.md)
+
+[![Release](https://img.shields.io/github/v/release/var-gg/gitwink)](https://github.com/var-gg/gitwink/releases/latest)
 
 > Tray-resident, read-only git glance for the AI-agent era.
 
-**Status:** v0.1 — usable. Cold-start friendly tray app.
+**Status:** v0.2 — usable. Cold-start friendly tray app.
 
 ![gitwink](docs/images/hero.gif)
 
 gitwink lives in your system tray. Click it to glance at recent commit
 activity across **all** your local repos. It is **not** a git client — it
 cannot commit, push, merge, or modify anything. Read-only by design.
+
+## Download
+
+[**Download the latest release →**](https://github.com/var-gg/gitwink/releases/latest)
+
+- **Windows** — `.exe` (NSIS installer) or `.msi`
+- **macOS** — `.dmg` (universal)
+
+Artefacts are unsigned for now, so Windows SmartScreen / macOS Gatekeeper
+will warn on first launch — the release notes have the bypass steps.
+Prefer to build it yourself? See [Development](#development).
 
 ## Origin
 
@@ -39,7 +52,7 @@ agent commits  →  tray click  →  inline expand  →  "Copy as AI context"
                                                    →  "did the agent do this right?"
 ```
 
-## What v0.1 ships
+## Features
 
 - System tray icon (Windows tray / macOS menu bar) with click-to-toggle
   and right-click Reset position / Open settings file / Quit.

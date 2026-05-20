@@ -1,16 +1,29 @@
 # gitwink
 
-[English](README.md) · **한국어**
+[English](README.md) · **한국어** · [日本語](README.ja.md)
+
+[![Release](https://img.shields.io/github/v/release/var-gg/gitwink)](https://github.com/var-gg/gitwink/releases/latest)
 
 > AI 에이전트 시대를 위한 트레이 상주 · 읽기 전용 git glance.
 
-**상태:** v0.1 — 쓸 만함. cold-start 친화적인 트레이 앱.
+**상태:** v0.2 — 쓸 만함. cold-start 친화적인 트레이 앱.
 
 ![gitwink](docs/images/hero.gif)
 
 gitwink는 시스템 트레이에 산다. 클릭하면 **모든** 로컬 repo의 최근
 커밋 활동을 한눈에 본다. git **클라이언트가 아니다** — commit, push,
 merge, 수정 어느 것도 못 한다. 설계상 읽기 전용.
+
+## 다운로드
+
+[**최신 릴리즈 다운로드 →**](https://github.com/var-gg/gitwink/releases/latest)
+
+- **Windows** — `.exe` (NSIS 인스톨러) 또는 `.msi`
+- **macOS** — `.dmg` (universal)
+
+현재 아티팩트는 서명되지 않아, 첫 실행 시 Windows SmartScreen / macOS
+Gatekeeper가 경고를 띄운다 — 우회 방법은 릴리즈 노트에 있다. 직접
+빌드하려면 [개발](#개발) 참고.
 
 ## 만든 이유
 
@@ -39,7 +52,7 @@ commit 없음. push 없음. merge 없음. git 수술이 필요하면
                                                    →  "에이전트가 제대로 했나?"
 ```
 
-## v0.1에 들어간 것
+## 기능
 
 - 시스템 트레이 아이콘 (Windows 트레이 / macOS 메뉴바). 클릭으로
   토글, 우클릭으로 위치 리셋 / 설정 파일 열기 / 종료.
