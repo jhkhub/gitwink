@@ -345,12 +345,12 @@ body,
 .chip-item-row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding-right: 6px;
-  padding-left: 8px;
+  padding-left: 6px;
   min-width: 0;
   max-width: 100%;
-  transition: all 0.2s ease;
+  transition: background 0.15s ease;
 }
 
 .chip-item-row.active {
@@ -359,7 +359,6 @@ body,
 
 .chip-item-row.selected {
   background: linear-gradient(90deg, rgba(80, 130, 240, 0.08), rgba(80, 130, 240, 0.12));
-  transition: background 0.2s ease;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -368,14 +367,18 @@ body,
   }
 }
 
+/* Compact custom checkbox for the multi-repo filter. Rendered as a
+ * <button role="checkbox"> so it's focusable and keyboard-operable. */
 .chip-checkbox {
-  width: 20px;
-  height: 20px;
+  width: 15px;
+  height: 15px;
+  box-sizing: border-box;
   flex-shrink: 0;
+  padding: 0;
   cursor: pointer;
-  border: 2px solid rgba(128, 128, 128, 0.3);
-  border-radius: 5px;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1.5px solid rgba(128, 128, 128, 0.35);
+  border-radius: 4px;
+  transition: border-color 0.15s ease, background 0.15s ease;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -384,41 +387,38 @@ body,
 
 @media (prefers-color-scheme: dark) {
   .chip-checkbox {
-    border-color: rgba(255, 255, 255, 0.25);
+    border-color: rgba(255, 255, 255, 0.28);
     background: rgba(0, 0, 0, 0.4);
   }
 }
 
-.chip-checkbox:hover {
-  transform: scale(1.08);
-  border-color: rgba(80, 130, 240, 0.5);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-@media (prefers-color-scheme: dark) {
-  .chip-checkbox:hover {
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-  }
+.chip-checkbox:not(.readonly):hover {
+  border-color: rgba(80, 130, 240, 0.6);
 }
 
 .chip-checkbox.checked {
   background: linear-gradient(135deg, #5082f0, #4a7ae8);
   border-color: #5082f0;
-  box-shadow: 0 2px 8px rgba(80, 130, 240, 0.35);
-  transform: scale(1.05);
 }
 
-.chip-checkbox.checked:hover {
+.chip-checkbox.checked:not(.readonly):hover {
   background: linear-gradient(135deg, #5a8cf5, #5489f0);
-  box-shadow: 0 3px 10px rgba(80, 130, 240, 0.45);
+}
+
+/* Single-repo mode: the multi-select filter is dormant, so the checkbox
+ * is shown disabled rather than removed — layout stays put and the
+ * feature stays discoverable. */
+.chip-checkbox.readonly {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .chip-checkbox-icon {
   color: white;
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 10px;
+  font-weight: 700;
   line-height: 1;
-  animation: checkmark 0.2s ease-out;
+  animation: checkmark 0.15s ease-out;
 }
 
 @keyframes checkmark {

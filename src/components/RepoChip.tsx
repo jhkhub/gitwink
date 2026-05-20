@@ -51,6 +51,20 @@ export function RepoChip({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Snapshot of `selectedPaths` taken when the dropdown opens. The
+  // selected-to-top sort keys off this snapshot, not the live value, so
+  // ticking a checkbox never makes a row jump under the cursor — reopening
+  // re-snapshots and the just-checked repos float up then. Same pattern as
+  // `pinnedSnapshot` above and BranchChip's `snapshot`.
+  const [selectedSnapshot, setSelectedSnapshot] = useState<string[] | "all">(
+    selectedPaths,
+  );
+  useEffect(() => {
+    if (open) setSelectedSnapshot(selectedPaths);
+    // `selectedPaths` intentionally omitted — must NOT re-snapshot while open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const livePinned = useMemo(() => new Set(pinned), [pinned]);
 
   const repoByPath = useMemo(() => {
@@ -65,35 +79,39 @@ export function RepoChip({
     r.name.toLowerCase().includes(q) ||
     r.path.toLowerCase().includes(q);
 
+  // Single-repo mode: App ignores the multi-select filter, so the row
+  // checkboxes render read-only instead of silently doing nothing.
+  const singleRepoMode = selectedPath != null;
+
+  const selectedSnapSet = useMemo(
+    () => (Array.isArray(selectedSnapshot) ? new Set(selectedSnapshot) : null),
+    [selectedSnapshot],
+  );
+
+  // Section ordering: snapshot-selected repos float to the top of their
+  // section. Sort is stable, so within each group the Pinned section keeps
+  // pin order and the All section stays alphabetical.
   const pinnedRepos = useMemo(() => {
-    const filtered = pinnedSnapshot
-      .filter((p) => {
-        const r = repoByPath.get(p);
-        return r && matches(r);
-      })
-      .map((p) => repoByPath.get(p)!);
-    const selected = Array.isArray(selectedPaths) ? selectedPaths : [];
-    return filtered.sort((a, b) => {
-      const aSelected = selected.includes(a.path);
-      const bSelected = selected.includes(b.path);
-      if (aSelected && !bSelected) return -1;
-      if (!aSelected && bSelected) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [pinnedSnapshot, repoByPath, query, selectedPaths]);
+    const list = pinnedSnapshot
+      .map((p) => repoByPath.get(p))
+      .filter((r): r is Repo => !!r && matches(r));
+    return list.sort(
+      (a, b) =>
+        (selectedSnapSet?.has(a.path) ? 0 : 1) -
+        (selectedSnapSet?.has(b.path) ? 0 : 1),
+    );
+  }, [pinnedSnapshot, repoByPath, q, selectedSnapSet]);
 
   const otherRepos = useMemo(() => {
-    const filtered = repos
-      .filter((r) => !pinnedSnapshot.includes(r.path) && matches(r));
-    const selected = Array.isArray(selectedPaths) ? selectedPaths : [];
-    return filtered.sort((a, b) => {
-      const aSelected = selected.includes(a.path);
-      const bSelected = selected.includes(b.path);
-      if (aSelected && !bSelected) return -1;
-      if (!aSelected && bSelected) return 1;
-      return a.name.localeCompare(b.name);
-    });
-  }, [repos, pinnedSnapshot, query, selectedPaths]);
+    const snapSet = new Set(pinnedSnapshot);
+    const list = repos.filter((r) => !snapSet.has(r.path) && matches(r));
+    return list.sort(
+      (a, b) =>
+        (selectedSnapSet?.has(a.path) ? 0 : 1) -
+          (selectedSnapSet?.has(b.path) ? 0 : 1) ||
+        a.name.localeCompare(b.name),
+    );
+  }, [repos, pinnedSnapshot, q, selectedSnapSet]);
 
   const selected = selectedPath ? repoByPath.get(selectedPath) : null;
   const label = selected ? (
@@ -145,6 +163,20 @@ export function RepoChip({
         />
       </div>
       <div className="chip-list">
+        <button
+          type="button"
+          className={
+            "chip-item" +
+            (selectedPath == null && selectedPaths === "all" ? " active" : "")
+          }
+          onClick={() => {
+            onSelect(null);
+            onSelectMulti("all");
+            onClose();
+          }}
+        >
+          <span className="chip-item-name">All repos</span>
+        </button>
         {pinnedRepos.length > 0 && (
           <>
             <div className="chip-section">📌 Pinned</div>
@@ -155,6 +187,7 @@ export function RepoChip({
                 pinned={livePinned.has(r.path)}
                 active={selectedPath === r.path}
                 selected={Array.isArray(selectedPaths) && selectedPaths.includes(r.path)}
+                checkboxReadonly={singleRepoMode}
                 onSelect={() => {
                   onSelect(r.path);
                   onClose();
@@ -182,6 +215,7 @@ export function RepoChip({
                 pinned={livePinned.has(r.path)}
                 active={selectedPath === r.path}
                 selected={Array.isArray(selectedPaths) && selectedPaths.includes(r.path)}
+                checkboxReadonly={singleRepoMode}
                 onSelect={() => {
                   onSelect(r.path);
                   onClose();
@@ -212,6 +246,7 @@ function RepoItem({
   pinned,
   active,
   selected,
+  checkboxReadonly,
   onSelect,
   onToggleSelect,
   onPin,
@@ -221,6 +256,7 @@ function RepoItem({
   pinned: boolean;
   active: boolean;
   selected: boolean;
+  checkboxReadonly: boolean;
   onSelect: () => void;
   onToggleSelect: () => void;
   onPin: () => void;
@@ -236,15 +272,35 @@ function RepoItem({
         (selected ? " selected" : "")
       }
     >
-      <div
-        className={`chip-checkbox ${selected ? "checked" : ""}`}
+      <button
+        type="button"
+        role="checkbox"
+        aria-checked={selected}
+        aria-disabled={checkboxReadonly || undefined}
+        aria-label={`Filter timeline to ${repo.name}`}
+        tabIndex={checkboxReadonly ? -1 : 0}
+        className={
+          "chip-checkbox" +
+          (selected ? " checked" : "") +
+          (checkboxReadonly ? " readonly" : "")
+        }
+        title={
+          checkboxReadonly
+            ? "Multi-select filter is available in all-repos mode"
+            : "Add to multi-repo filter"
+        }
         onClick={(e) => {
           e.stopPropagation();
+          if (checkboxReadonly) return;
           onToggleSelect();
         }}
       >
-        {selected && <span className="chip-checkbox-icon">✓</span>}
-      </div>
+        {selected && (
+          <span className="chip-checkbox-icon" aria-hidden="true">
+            ✓
+          </span>
+        )}
+      </button>
       <button
         type="button"
         className="chip-item"
