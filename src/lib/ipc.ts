@@ -236,3 +236,11 @@ export async function onTimelineRepoFill(
 ): Promise<UnlistenFn> {
   return listen<TimelineRepoFill>("timeline://repo-fill", (e) => cb(e.payload));
 }
+
+/** Fires when the panel is summoned (tray click / global hotkey). The
+ * webview is only un-hidden, never re-created, so the bootstrap commit
+ * fetch runs once per launch — the frontend uses this to re-pull commits
+ * as a fallback for anything the live file-watcher missed. */
+export async function onPanelShown(cb: () => void): Promise<UnlistenFn> {
+  return listen("panel://shown", () => cb());
+}

@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 
 use crate::settings;
 
@@ -14,8 +14,17 @@ pub fn toggle_panel(app: &AppHandle) {
         let _ = window.hide();
     } else {
         position_panel(&window);
+        // Re-assert always-on-top on every summon: open_diff drops it so
+        // the diff window isn't trapped behind the panel, and it can
+        // still be false from an earlier diff session.
+        let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
+        // The webview is only un-hidden on show, never re-created, so the
+        // bootstrap commit fetch runs once per app launch. Nudge the
+        // frontend to re-pull so a commit the file-watcher missed (or a
+        // repo whose watcher never attached) still surfaces on summon.
+        let _ = window.emit("panel://shown", ());
     }
 }
 

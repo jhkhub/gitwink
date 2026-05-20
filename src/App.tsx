@@ -20,6 +20,7 @@ import {
   listRecentCommitsCached,
   listRepos,
   onOrchestratorProgress,
+  onPanelShown,
   onRepoDiscovered,
   onTimelineRepoFill,
   recentCommits,
@@ -148,6 +149,11 @@ function App() {
   // panel blur (i.e. "the user has seen this, mark as read on close").
   const [freshHashes, setFreshHashes] = useState<Set<string>>(() => new Set());
 
+  // Bumped each time the panel is summoned. Both commit-fetching effects
+  // depend on it, so re-showing the panel re-pulls commits — covering
+  // anything the live file-watcher missed (see onPanelShown).
+  const [refreshNonce, setRefreshNonce] = useState(0);
+
   const [openChip, setOpenChip] = useState<
     "repo" | "time" | "authors" | "branch" | null
   >(null);
@@ -177,6 +183,7 @@ function App() {
     let unDiscovered: UnlistenFn | undefined;
     let unFill: UnlistenFn | undefined;
     let unStatus: UnlistenFn | undefined;
+    let unShown: UnlistenFn | undefined;
 
     (async () => {
       try {
@@ -216,6 +223,14 @@ function App() {
         if (!mounted) return;
         setDiscoveredCount(p.reposFound);
         setScanning(p.state === "scanning");
+      });
+
+      // Panel summoned — re-pull commits as a fallback for anything the
+      // live file-watcher missed (a missed event, a repo whose watcher
+      // never attached). The webview persists across hide/show, so this
+      // is the only re-fetch trigger besides a filter change.
+      unShown = await onPanelShown(() => {
+        if (mounted) setRefreshNonce((n) => n + 1);
       });
 
       // Per-repo discovery: merge into allRepos so the repo chip
@@ -301,6 +316,7 @@ function App() {
       unDiscovered?.();
       unFill?.();
       unStatus?.();
+      unShown?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -322,7 +338,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [windowDays, singleMode]);
+  }, [windowDays, singleMode, refreshNonce]);
 
   // ----- single-repo mode: branch list + saved selection -----
   // Both depend ONLY on the repo — the branch set is window-independent,
@@ -439,7 +455,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [singleMode, selectedRepoPath, selectedBranches, windowDays]);
+  }, [singleMode, selectedRepoPath, selectedBranches, windowDays, refreshNonce]);
 
   // Manual add via drag-drop / paste. Returns whether the add succeeded
   // so the paste handler can clear the clipboard string only on success.

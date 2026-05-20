@@ -134,6 +134,11 @@ pub fn run() {
                         if let Some(w) = handle.get_webview_window("diff") {
                             let _ = w.hide();
                         }
+                        // Diff window gone — restore the panel's
+                        // always-on-top (open_diff dropped it).
+                        if let Some(p) = handle.get_webview_window("panel") {
+                            let _ = p.set_always_on_top(true);
+                        }
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         let stamp = if matches!(evt, WindowEvent::Moved(_)) {

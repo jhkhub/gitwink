@@ -285,6 +285,9 @@ pub fn take_pending_diff_open(
 pub fn dismiss_panel(app: AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         let _ = panel.hide();
+        // Give the panel its always-on-top back so a later summon isn't
+        // left non-floating if a diff window was open at dismiss time.
+        let _ = panel.set_always_on_top(true);
     }
     if let Some(diff) = app.get_webview_window("diff") {
         let _ = diff.hide();
@@ -346,6 +349,13 @@ pub async fn open_diff(
         if let Ok(mut s) = state.lock() {
             *s = Some(payload.clone());
         }
+    }
+
+    // The panel is always-on-top; drop that while the diff window is up
+    // so the diff isn't trapped behind it. Restored when the diff hides
+    // (lib.rs CloseRequested) or the panel is next summoned (window.rs).
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.set_always_on_top(false);
     }
 
     if let Some(diff) = app.get_webview_window("diff") {
