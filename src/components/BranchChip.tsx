@@ -29,15 +29,35 @@ export function BranchChip({
     if (!open) setQuery("");
   }, [open]);
 
+  // Snapshot of `selected` taken when the dropdown opens. The list order
+  // is frozen against this — toggling a ✓ while the dropdown is open
+  // never makes a row jump under the cursor. Reopening re-snapshots, so
+  // the just-checked branches float to the top then (VS Code's pattern).
+  const [snapshot, setSnapshot] = useState<string[] | "all">(selected);
+  useEffect(() => {
+    if (open) setSnapshot(selected);
+    // `selected` is intentionally omitted: the snapshot must NOT update
+    // while the dropdown stays open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
   const { localBranches, remoteBranches } = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const match = (b: BranchInfo) =>
-      !q || b.name.toLowerCase().includes(q);
+    const match = (b: BranchInfo) => !q || b.name.toLowerCase().includes(q);
+    const snapSet = snapshot === "all" ? null : new Set(snapshot);
+    // Branches selected at open-time sort to the top of their section.
+    // The sort key is the snapshot, so the order holds steady while open.
+    const rank = (b: BranchInfo) => (snapSet?.has(b.refName) ? 0 : 1);
+    const bySnapshot = (a: BranchInfo, b: BranchInfo) => rank(a) - rank(b);
     return {
-      localBranches: branches.filter((b) => b.kind === "local" && match(b)),
-      remoteBranches: branches.filter((b) => b.kind === "remote" && match(b)),
+      localBranches: branches
+        .filter((b) => b.kind === "local" && match(b))
+        .sort(bySnapshot),
+      remoteBranches: branches
+        .filter((b) => b.kind === "remote" && match(b))
+        .sort(bySnapshot),
     };
-  }, [branches, query]);
+  }, [branches, query, snapshot]);
 
   // Label adapts to the count. For a single selection we show the branch
   // name itself — minimum cognitive load — and fall back to a count when
@@ -69,13 +89,11 @@ export function BranchChip({
   }
 
   function renderItem(b: BranchInfo) {
-    // In the "all" meta-state, the All branches row at the top carries
-    // the highlight — individual items shouldn't ALSO look "checked",
-    // because then a user clicking a row to "uncheck it" is met with
-    // the GitLens focus behaviour ("now showing only that one") and
-    // it feels like a different row got deselected. The fix is
-    // visual: no per-item ✓ until the user makes an explicit
-    // selection.
+    // In the "all" meta-state the All branches row at the top carries the
+    // highlight — individual items shouldn't ALSO look "checked", or a
+    // user clicking a row to "uncheck it" is met with the GitLens focus
+    // behaviour and it feels like a different row got deselected. So: no
+    // per-item ✓ until the user makes an explicit selection.
     const isSelected =
       selected !== "all" && (selected as string[]).includes(b.refName);
     return (

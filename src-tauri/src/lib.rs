@@ -283,6 +283,8 @@ pub fn run() {
             commands::get_scan_state,
             commands::get_pinned_repos,
             commands::set_pinned_repos,
+            commands::get_branch_selection,
+            commands::set_branch_selection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

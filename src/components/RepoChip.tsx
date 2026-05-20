@@ -34,6 +34,21 @@ export function RepoChip({
     if (!open) setQuery("");
   }, [open]);
 
+  // Snapshot of `pinned` taken when the dropdown opens. Section
+  // membership (Pinned vs All) is decided against this snapshot, so
+  // toggling a ★ while open never moves a repo between sections under
+  // the cursor. The star glyph still reflects the live pin state for
+  // immediate feedback; reopening re-snapshots and the reorder lands.
+  const [pinnedSnapshot, setPinnedSnapshot] = useState<string[]>(pinned);
+  useEffect(() => {
+    if (open) setPinnedSnapshot(pinned);
+    // `pinned` is intentionally omitted: the snapshot must NOT update
+    // while the dropdown stays open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  const livePinned = useMemo(() => new Set(pinned), [pinned]);
+
   const repoByPath = useMemo(() => {
     const m = new Map<string, Repo>();
     for (const r of repos) m.set(r.path, r);
@@ -48,20 +63,20 @@ export function RepoChip({
 
   const pinnedRepos = useMemo(
     () =>
-      pinned
+      pinnedSnapshot
         .map((p) => repoByPath.get(p))
         .filter((r): r is Repo => !!r)
         .filter(matches),
-    [pinned, repoByPath, q],
+    [pinnedSnapshot, repoByPath, q],
   );
 
   const otherRepos = useMemo(() => {
-    const pinnedSet = new Set(pinned);
+    const snapSet = new Set(pinnedSnapshot);
     return repos
-      .filter((r) => !pinnedSet.has(r.path))
+      .filter((r) => !snapSet.has(r.path))
       .filter(matches)
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [repos, pinned, q]);
+  }, [repos, pinnedSnapshot, q]);
 
   const selected = selectedPath ? repoByPath.get(selectedPath) : null;
   const label = selected ? (
@@ -116,7 +131,7 @@ export function RepoChip({
               <RepoItem
                 key={r.path}
                 repo={r}
-                pinned
+                pinned={livePinned.has(r.path)}
                 active={selectedPath === r.path}
                 onSelect={() => {
                   onSelect(r.path);
@@ -135,7 +150,7 @@ export function RepoChip({
               <RepoItem
                 key={r.path}
                 repo={r}
-                pinned={false}
+                pinned={livePinned.has(r.path)}
                 active={selectedPath === r.path}
                 onSelect={() => {
                   onSelect(r.path);

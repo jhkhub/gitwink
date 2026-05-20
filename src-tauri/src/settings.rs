@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -22,6 +23,13 @@ pub struct Settings {
     /// back to DEFAULT_PANEL_HOTKEY. Takes effect on next app start.
     #[serde(default)]
     pub panel_hotkey: Option<String>,
+    /// Per-repo branch selection. Key = repo canonical path, value =
+    /// the selected branch refNames. Restored when the user re-enters
+    /// single-repo mode for that repo so the BranchChip filter survives
+    /// across sessions. An absent entry means "all branches" — the
+    /// first-entry default.
+    #[serde(default)]
+    pub branch_selections: HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -103,6 +111,22 @@ pub fn save_pinned_repos(app: &AppHandle, pinned: Vec<String>) {
     s.pinned_repos = pinned;
     if let Err(e) = save(app, &s) {
         eprintln!("settings: failed to persist pinned_repos: {e:#}");
+    }
+}
+
+/// Persist the branch selection for one repo. An empty list removes the
+/// entry entirely — absence means "all branches", so a selection of
+/// "all" and a never-visited repo collapse to the same default.
+pub fn save_branch_selection(app: &AppHandle, repo_path: &str, selection: Vec<String>) {
+    let mut s = load(app);
+    if selection.is_empty() {
+        s.branch_selections.remove(repo_path);
+    } else {
+        s.branch_selections
+            .insert(repo_path.to_string(), selection);
+    }
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist branch_selections: {e:#}");
     }
 }
 

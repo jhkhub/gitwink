@@ -12,6 +12,7 @@ import {
   currentUpstreamStatus,
   dismissPanel,
   explicitAddRepo,
+  getBranchSelection,
   getPinnedRepos,
   getScanState,
   hideRepo,
@@ -23,6 +24,7 @@ import {
   onTimelineRepoFill,
   recentCommits,
   repoCommits,
+  setBranchSelection as saveBranchSelection,
   setPanelSticky,
   setPinnedRepos as savePinnedRepos,
 } from "./lib/ipc";
@@ -322,24 +324,28 @@ function App() {
     };
   }, [windowDays, singleMode]);
 
-  // ----- single-repo mode: branch list (depends ONLY on repo) -----
-  // Refreshing the branch list when window changes is wasteful — the
-  // available branches don't depend on the time window. Repo changes
-  // also reset selectedBranches so the commits effect re-fires cleanly
-  // with the fresh "all" filter rather than a stale per-repo selection.
+  // ----- single-repo mode: branch list + saved selection -----
+  // Both depend ONLY on the repo — the branch set is window-independent,
+  // so refetching when the time window changes would be wasteful. On
+  // repo change we reset selectedBranches to "all" up front so the
+  // commits effect never fires with a stale per-repo selection, then
+  // restore this repo's saved selection if it has one. Absence of a
+  // saved selection ⇒ "all", the first-entry default.
   useEffect(() => {
-    if (!singleMode) {
+    if (!singleMode || !selectedRepoPath) {
       setBranches([]);
       setSelectedBranches("all");
       return;
     }
-    // Repo just entered or changed — clear stale selection from any
-    // previous repo before kicking off the branch fetch.
     setSelectedBranches("all");
     let cancelled = false;
     (async () => {
       try {
-        const bs = await listBranches(selectedRepoPath!);
+        const saved = await getBranchSelection(selectedRepoPath);
+        if (!cancelled && saved.length > 0) setSelectedBranches(saved);
+      } catch {}
+      try {
+        const bs = await listBranches(selectedRepoPath);
         if (!cancelled) setBranches(bs);
       } catch {}
     })();
@@ -347,6 +353,20 @@ function App() {
       cancelled = true;
     };
   }, [singleMode, selectedRepoPath]);
+
+  // Persist the BranchChip selection per repo so it survives across
+  // sessions. "all" is stored as an empty list (absence ⇒ "all"), so the
+  // first-entry default and an explicit "all" pick collapse to the same
+  // thing.
+  const handleBranchChange = useCallback(
+    (sel: string[] | "all") => {
+      setSelectedBranches(sel);
+      if (selectedRepoPath) {
+        void saveBranchSelection(selectedRepoPath, sel === "all" ? [] : sel);
+      }
+    },
+    [selectedRepoPath],
+  );
 
   // ----- single-repo mode: upstream status (selection-aware) -----
   // Refetches whenever the repo OR the BranchChip selection changes. Logic:
@@ -661,7 +681,7 @@ function App() {
               onClose={() => setOpenChip(null)}
               branches={branches}
               selected={selectedBranches}
-              onChange={setSelectedBranches}
+              onChange={handleBranchChange}
             />
           )}
           {singleMode && upstream && (

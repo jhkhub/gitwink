@@ -185,6 +185,20 @@ export async function setPinnedRepos(repos: string[]): Promise<void> {
   await invoke("set_pinned_repos", { repos });
 }
 
+/** Saved branch selection for one repo — restored when the user
+ * re-enters single-repo mode. An empty array means "all branches".
+ * Persisted per repo in settings.json. */
+export async function getBranchSelection(repoPath: string): Promise<string[]> {
+  return invoke<string[]>("get_branch_selection", { repoPath });
+}
+
+export async function setBranchSelection(
+  repoPath: string,
+  selection: string[],
+): Promise<void> {
+  await invoke("set_branch_selection", { repoPath, selection });
+}
+
 export async function onScanProgress(
   cb: (p: ScanProgress) => void,
 ): Promise<UnlistenFn> {

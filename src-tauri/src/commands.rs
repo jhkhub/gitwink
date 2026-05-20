@@ -488,6 +488,22 @@ pub fn set_pinned_repos(app: AppHandle, repos: Vec<String>) {
     settings::save_pinned_repos(&app, repos);
 }
 
+/// Saved branch selection for one repo — restored when the user
+/// re-enters single-repo mode. An empty result means "all branches".
+#[tauri::command]
+pub fn get_branch_selection(app: AppHandle, repo_path: String) -> Vec<String> {
+    settings::load(&app)
+        .branch_selections
+        .get(&repo_path)
+        .cloned()
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn set_branch_selection(app: AppHandle, repo_path: String, selection: Vec<String>) {
+    settings::save_branch_selection(&app, &repo_path, selection);
+}
+
 
 fn unix_now() -> i64 {
     SystemTime::now()
