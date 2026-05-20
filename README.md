@@ -25,6 +25,14 @@ Artefacts are unsigned for now, so Windows SmartScreen / macOS Gatekeeper
 will warn on first launch — the release notes have the bypass steps.
 Prefer to build it yourself? See [Development](#development).
 
+## Code signing
+
+gitwink participates in the [SignPath Foundation](https://signpath.org/)
+free code-signing program for open-source software — see the
+[Code signing policy](CODE_SIGNING_POLICY.md). Until the first signed
+release ships, Windows builds remain unsigned (see [Download](#download)
+above).
+
 ## Origin
 
 I used to live in VS Code with GitLens pinned. The branch graph,
