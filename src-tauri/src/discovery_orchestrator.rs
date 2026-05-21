@@ -255,9 +255,9 @@ fn announce_registered_repo(
         })
         .collect::<Vec<_>>();
     if !commits.is_empty() {
-        if let Ok(mut conn) = cache::open(app) {
-            let _ = cache::upsert_commits(&mut conn, &commits);
-        }
+        let outcome = cache::open(app)
+            .ok()
+            .and_then(|mut conn| cache::upsert_commits(&mut conn, &commits).ok());
         let _ = app.emit(
             "timeline://repo-fill",
             RepoFillPayload {
@@ -265,6 +265,17 @@ fn announce_registered_repo(
                 fresh: false,
             },
         );
+        // Phase 2: also emit the lightweight windowed-pull signal.
+        if let Some(o) = outcome {
+            let _ = app.emit(
+                "timeline://invalidated",
+                cache::TimelineInvalidated {
+                    generation: o.generation,
+                    inserted: o.inserted,
+                    repo_path: repo.canonical_path.clone(),
+                },
+            );
+        }
     }
 
     if let Some(w) = app.try_state::<watcher::RepoWatcher>() {

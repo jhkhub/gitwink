@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -29,14 +29,21 @@ fn default_status() -> String {
 /// half the cap.
 pub const DIFF_CACHE_MAX_BYTES: i64 = 500 * 1024 * 1024;
 
-/// DDL for the `commits` table and its indexes (schema v3). Shared by the
+/// DDL for the `commits` table and its indexes (schema v4). Shared by the
 /// `open()` migration and the test fixtures so the two never drift.
 ///
-/// `repo_id` and `sort_ts` are `NOT NULL DEFAULT 0` so the table also
-/// tolerates writes from older (pre-v3) builds during the rollout — they
-/// omit those columns rather than hitting a constraint error. v3's own
-/// `upsert_commits` always supplies real values.
-const COMMITS_SCHEMA_V3: &str = r#"
+/// `repo_id`, `sort_ts` and `first_seen_generation` are `NOT NULL DEFAULT 0`
+/// so the table tolerates writes from older builds during the rollout — the
+/// shared cache.db is also opened by pre-v4 releases, which omit those
+/// columns rather than hitting a constraint error. v4's own `upsert_commits`
+/// always supplies real values.
+///
+/// `first_seen_generation` records the generation counter (see
+/// `next_generation`) in effect when the row was first inserted, and is
+/// never rewritten by a later conflict-update. A reader pinned to generation
+/// N filters `first_seen_generation <= N` for an MVCC-lite snapshot the
+/// background scanner's subsequent inserts cannot disturb.
+const COMMITS_SCHEMA_V4: &str = r#"
 CREATE TABLE commits (
     repo_path TEXT NOT NULL,
     hash TEXT NOT NULL,
@@ -55,6 +62,7 @@ CREATE TABLE commits (
     message TEXT NOT NULL DEFAULT '',
     remote_tip_label TEXT,
     remote_tip_extra_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_generation INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (repo_path, hash)
 );
 -- Total-order index for keyset window queries. Newest-first = ascending on
@@ -77,6 +85,14 @@ fn db_path(app: &AppHandle) -> Result<PathBuf> {
 pub fn open(app: &AppHandle) -> Result<Connection> {
     let path = db_path(app)?;
     let conn = Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
+    // The cache is opened on separate connections from several threads — the
+    // file watcher, command spawn_blocking tasks, the discovery orchestrator.
+    // Without a busy timeout a concurrent writer fails immediately with
+    // SQLITE_BUSY; 5s lets the short upsert transactions queue instead.
+    // Phase 2's per-batch generation bump makes every `upsert_commits` a
+    // (slightly longer) write transaction, so this keeps that contention
+    // invisible.
+    let _ = conn.busy_timeout(Duration::from_secs(5));
     conn.execute_batch(
         r#"
         CREATE TABLE IF NOT EXISTS repos (
@@ -236,19 +252,20 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
         "#,
     )?;
 
-    // Schema v3: the `commits` table gains `repo_id` + `sort_ts` for the
-    // windowed timeline (keyset pagination over a total-order index).
-    // `commits` is a pure cache the scanner refills, so we drop & recreate
-    // rather than ALTER — `repos` (tombstones, user state) is untouched.
+    // Schema v3 gave `commits` `repo_id` + `sort_ts` for the windowed
+    // timeline; schema v4 adds `first_seen_generation` for the
+    // generation/MVCC-lite snapshot model. `commits` is a pure cache the
+    // scanner refills, so each step drops & recreates it rather than
+    // ALTERing — `repos` (tombstones, user state) and `meta` (which holds
+    // the generation counter itself) are untouched.
     let schema_ver: i64 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);
-    if schema_ver < 3 {
-        // `commits` is a pure cache — drop and recreate it at the v3 schema.
+    if schema_ver < 4 {
         conn.execute_batch("DROP TABLE IF EXISTS commits;")?;
-        conn.execute_batch(COMMITS_SCHEMA_V3)?;
+        conn.execute_batch(COMMITS_SCHEMA_V4)?;
     }
-    let _ = conn.pragma_update(None, "user_version", 3_i64);
+    let _ = conn.pragma_update(None, "user_version", 4_i64);
 
     // v0.1.2 cleanup: the v0.1.1 orchestrator used `fs::canonicalize`
     // and stored its `\\?\…` Windows extended-length output as
@@ -427,18 +444,100 @@ pub fn meta_set(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// ----- commit generation (Phase 2: MVCC-lite snapshot) -----
+
+/// `meta` key holding the monotonic commit-generation counter.
+const GENERATION_KEY: &str = "commit_generation";
+
+/// Atomically bump the commit generation and return the new value.
+///
+/// The generation is a counter the scanner advances exactly once per write
+/// batch (see `upsert_commits`); every commit a batch newly inserts is
+/// stamped with the generation then in effect. A reader that pins
+/// `view_generation = N` then sees a stable snapshot — later batches insert
+/// at a generation > N and stay invisible until the reader re-pins.
+///
+/// MUST be called as the first statement of the same transaction that
+/// writes the batch's commits, so the bump and the rows it stamps commit
+/// together: a reader can never observe a half-applied batch, and two
+/// concurrent batches can never share a generation.
+fn next_generation(conn: &Connection) -> Result<i64> {
+    conn.execute(
+        r#"
+        INSERT INTO meta (key, value, updated_at) VALUES (?1, '1', ?2)
+        ON CONFLICT(key) DO UPDATE SET
+            value = CAST(value AS INTEGER) + 1,
+            updated_at = excluded.updated_at
+        "#,
+        params![GENERATION_KEY, unix_now()],
+    )?;
+    let generation: i64 = conn.query_row(
+        "SELECT CAST(value AS INTEGER) FROM meta WHERE key = ?1",
+        params![GENERATION_KEY],
+        |r| r.get(0),
+    )?;
+    Ok(generation)
+}
+
+/// The current commit generation — what a fresh reader should pin as its
+/// `view_generation`. 0 before the scanner has written any batch.
+pub fn current_generation(conn: &Connection) -> Result<i64> {
+    let raw = meta_get(conn, GENERATION_KEY)?;
+    Ok(raw.and_then(|s| s.parse().ok()).unwrap_or(0))
+}
+
 // ----- commits -----
 
-pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Result<()> {
+/// What a `upsert_commits` batch did. `generation` is the new generation the
+/// batch's freshly-inserted commits were stamped with; `inserted` counts only
+/// genuinely-new commits — a conflict-update of an already-cached commit is
+/// not counted, and does not change that commit's `first_seen_generation`.
+/// Callers that emit a `timeline://invalidated` event forward both fields;
+/// callers that only need the rows persisted ignore the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpsertOutcome {
+    pub generation: i64,
+    pub inserted: usize,
+}
+
+/// Lightweight scanner→UI invalidation signal, emitted as the
+/// `timeline://invalidated` event. The windowed-pull model never pushes
+/// commit arrays to the frontend: the scanner writes to the cache and only
+/// announces "generation N landed, touching `repo_path`, +`inserted` new
+/// commits". The UI then re-pulls whatever windows it currently shows. The
+/// payload is tiny, so it stays cheap even when a discovery sweep emits one
+/// per repo. camelCase to match the other event payloads.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineInvalidated {
+    pub generation: i64,
+    pub inserted: usize,
+    pub repo_path: String,
+}
+
+/// Insert or update a batch of commits, advancing the commit generation by
+/// one. Freshly-inserted rows are stamped with the new generation;
+/// already-cached rows keep their original `first_seen_generation` (only
+/// their mutable fields — branch labels, remote tips — are refreshed).
+/// Returns the new generation and the count of genuinely-new commits. An
+/// empty batch is a no-op and returns the `generation: 0` sentinel.
+pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Result<UpsertOutcome> {
     if commits.is_empty() {
-        return Ok(());
+        return Ok(UpsertOutcome {
+            generation: 0,
+            inserted: 0,
+        });
     }
     let tx = conn.transaction()?;
+    // One generation per batch — bumped first, before any row is written, so
+    // the whole batch (counter + rows) commits atomically.
+    let generation = next_generation(&tx)?;
+    let mut inserted = 0usize;
     {
         let mut stmt = tx.prepare(
             r#"
-            INSERT INTO commits (repo_path, hash, repo_id, repo_name, short_hash, summary, author, email, timestamp, sort_ts, branch_label, is_merge, is_tagged, parents, message, remote_tip_label, remote_tip_extra_count)
-            VALUES (?1, ?2, COALESCE((SELECT rowid FROM repos WHERE path = ?1), 0), ?3, ?4, ?5, ?6, ?7, ?8, -?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+            INSERT INTO commits (repo_path, hash, repo_id, repo_name, short_hash, summary, author, email, timestamp, sort_ts, branch_label, is_merge, is_tagged, parents, message, remote_tip_label, remote_tip_extra_count, first_seen_generation)
+            VALUES (?1, ?2, COALESCE((SELECT rowid FROM repos WHERE path = ?1), 0), ?3, ?4, ?5, ?6, ?7, ?8, -?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
             ON CONFLICT(repo_path, hash) DO UPDATE SET
                 repo_id = excluded.repo_id,
                 sort_ts = excluded.sort_ts,
@@ -454,31 +553,47 @@ pub fn upsert_commits(conn: &mut Connection, commits: &[CommitSummary]) -> Resul
                 message = excluded.message,
                 remote_tip_label = excluded.remote_tip_label,
                 remote_tip_extra_count = excluded.remote_tip_extra_count
+            RETURNING first_seen_generation
             "#,
         )?;
         for c in commits {
             let parents_json = serde_json::to_string(&c.parents).unwrap_or_else(|_| "[]".into());
-            stmt.execute(params![
-                c.repo_path,
-                c.hash,
-                c.repo_name,
-                c.short_hash,
-                c.summary,
-                c.author,
-                c.email,
-                c.timestamp,
-                c.branch_label,
-                c.is_merge as i32,
-                c.is_tagged as i32,
-                parents_json,
-                c.message,
-                c.remote_tip_label,
-                c.remote_tip_extra_count as i64,
-            ])?;
+            // RETURNING yields the row's `first_seen_generation` after the
+            // statement. A fresh insert stamped it with `generation`; a
+            // conflict-update left the (necessarily older) original value in
+            // place. Since `generation` is strictly greater than every prior
+            // generation, a match means "this row is new".
+            let row_generation: i64 = stmt.query_row(
+                params![
+                    c.repo_path,
+                    c.hash,
+                    c.repo_name,
+                    c.short_hash,
+                    c.summary,
+                    c.author,
+                    c.email,
+                    c.timestamp,
+                    c.branch_label,
+                    c.is_merge as i32,
+                    c.is_tagged as i32,
+                    parents_json,
+                    c.message,
+                    c.remote_tip_label,
+                    c.remote_tip_extra_count as i64,
+                    generation,
+                ],
+                |r| r.get(0),
+            )?;
+            if row_generation == generation {
+                inserted += 1;
+            }
         }
     }
     tx.commit()?;
-    Ok(())
+    Ok(UpsertOutcome {
+        generation,
+        inserted,
+    })
 }
 
 pub fn list_recent_commits(
@@ -553,6 +668,12 @@ pub struct TimelineFilters {
     pub authors: Option<Vec<String>>,
     /// Only commits at/after this unix-seconds timestamp. `None` = all time.
     pub since: Option<i64>,
+    /// MVCC-lite snapshot pin. When `Some(n)`, only commits whose
+    /// `first_seen_generation <= n` are visible — commits the background
+    /// scanner inserted after the UI pinned generation `n` stay hidden
+    /// until it re-pins. `None` = no pin, every commit visible (the
+    /// pre-Phase-2 behaviour the legacy non-windowed paths still rely on).
+    pub view_generation: Option<i64>,
 }
 
 /// One page of the timeline plus the cursors/flags the UI needs to fetch
@@ -608,7 +729,8 @@ fn row_to_window_item(row: &rusqlite::Row) -> rusqlite::Result<(CommitSummary, C
 /// the bound params it introduces. `repo_ids` go inline as an integer
 /// literal — they are our own row ids, never user text, and a huge
 /// multi-repo selection would otherwise blow past SQLite's bound-variable
-/// limit. `authors` (bounded, small) and `since` use bound params.
+/// limit. `authors` (bounded, small), `since` and `view_generation` use
+/// bound params.
 fn build_filter_sql(filters: &TimelineFilters) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut sql = String::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -643,6 +765,14 @@ fn build_filter_sql(filters: &TimelineFilters) -> (String, Vec<Box<dyn rusqlite:
                 params.push(Box::new(a.clone()));
             }
         }
+    }
+    // MVCC-lite snapshot pin: hide commits first seen after the caller's
+    // pinned generation. `first_seen_generation` is a residual predicate on
+    // the `idx_commits_timeline` scan — the keyset order is unaffected, so
+    // pagination over the pinned subset stays gap- and dupe-free.
+    if let Some(view_generation) = filters.view_generation {
+        sql.push_str(" AND first_seen_generation <= ?");
+        params.push(Box::new(view_generation));
     }
     (sql, params)
 }
@@ -911,20 +1041,64 @@ fn unix_now() -> i64 {
 mod tests {
     use super::*;
 
-    /// A fresh in-memory DB carrying just the v3 `commits` schema.
+    /// A fresh in-memory DB carrying just the v4 `commits` schema.
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(COMMITS_SCHEMA_V3).unwrap();
+        conn.execute_batch(COMMITS_SCHEMA_V4).unwrap();
         conn
     }
 
-    /// Insert one commit. `sort_ts` is derived from `ts` exactly as
-    /// `upsert_commits` does (= -timestamp).
-    fn insert(conn: &Connection, repo_id: i64, hash: &str, ts: i64, author: &str) {
+    /// A fresh in-memory DB with the v4 `commits` schema plus the minimal
+    /// `repos` + `meta` tables `upsert_commits` touches — the `repos` rowid
+    /// lookup and the `meta` generation counter respectively.
+    fn upsert_test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(COMMITS_SCHEMA_V4).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE repos (path TEXT PRIMARY KEY, name TEXT NOT NULL);\
+             CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, \
+             updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// Build a minimal `CommitSummary` for `upsert_commits` tests.
+    fn sample_commit(repo_path: &str, hash: &str, ts: i64) -> CommitSummary {
+        CommitSummary {
+            repo_path: repo_path.to_string(),
+            repo_name: "repo".to_string(),
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            summary: "summary".to_string(),
+            author: "alice".to_string(),
+            email: "alice@example.com".to_string(),
+            timestamp: ts,
+            branch_label: None,
+            is_merge: false,
+            is_tagged: false,
+            parents: Vec::new(),
+            message: "message".to_string(),
+            remote_tip_label: None,
+            remote_tip_extra_count: 0,
+        }
+    }
+
+    /// Insert one commit at an explicit `first_seen_generation`. `sort_ts`
+    /// is derived from `ts` exactly as `upsert_commits` does (= -timestamp).
+    fn insert_gen(
+        conn: &Connection,
+        repo_id: i64,
+        hash: &str,
+        ts: i64,
+        author: &str,
+        generation: i64,
+    ) {
         conn.execute(
             "INSERT INTO commits (repo_path, hash, repo_id, repo_name, \
-             short_hash, summary, author, email, timestamp, sort_ts) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             short_hash, summary, author, email, timestamp, sort_ts, \
+             first_seen_generation) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 format!("/repo/{repo_id}"),
                 hash,
@@ -936,9 +1110,15 @@ mod tests {
                 "dev@example.com",
                 ts,
                 -ts,
+                generation,
             ],
         )
         .unwrap();
+    }
+
+    /// Insert one commit at generation 0 (the always-visible default).
+    fn insert(conn: &Connection, repo_id: i64, hash: &str, ts: i64, author: &str) {
+        insert_gen(conn, repo_id, hash, ts, author, 0);
     }
 
     /// Page through the whole timeline (Older direction) via the cursor
@@ -1063,5 +1243,157 @@ mod tests {
             list_commits_around_anchor(&conn, &TimelineFilters::default(), &anchor, 3, 3).unwrap();
         assert!(!around.anchor_found);
         assert_eq!(around.rows.len(), 6, "3 newer + 3 older, no anchor row");
+    }
+
+    #[test]
+    fn generation_counter_is_monotonic() {
+        let mut conn = upsert_test_db();
+        assert_eq!(current_generation(&conn).unwrap(), 0, "0 before any batch");
+
+        // upsert_commits bumps the generation exactly once per batch.
+        let o1 = upsert_commits(&mut conn, &[sample_commit("/r/a", "h1", 100)]).unwrap();
+        assert_eq!(o1.generation, 1);
+        let o2 = upsert_commits(&mut conn, &[sample_commit("/r/a", "h2", 200)]).unwrap();
+        assert_eq!(o2.generation, 2);
+        assert_eq!(current_generation(&conn).unwrap(), 2);
+
+        // An empty batch is a no-op: no bump, `generation: 0` sentinel.
+        let o3 = upsert_commits(&mut conn, &[]).unwrap();
+        assert_eq!(o3, UpsertOutcome { generation: 0, inserted: 0 });
+        assert_eq!(
+            current_generation(&conn).unwrap(),
+            2,
+            "empty batch did not bump"
+        );
+    }
+
+    #[test]
+    fn upsert_stamps_generation_and_counts_only_new_rows() {
+        let mut conn = upsert_test_db();
+
+        // Batch 1: three brand-new commits.
+        let batch1 = [
+            sample_commit("/r/a", "h1", 100),
+            sample_commit("/r/a", "h2", 200),
+            sample_commit("/r/a", "h3", 300),
+        ];
+        let o1 = upsert_commits(&mut conn, &batch1).unwrap();
+        assert_eq!(
+            o1,
+            UpsertOutcome {
+                generation: 1,
+                inserted: 3
+            }
+        );
+
+        // Batch 2: one repeat (h3) + one new (h4) — only h4 counts as inserted.
+        let batch2 = [
+            sample_commit("/r/a", "h3", 300),
+            sample_commit("/r/a", "h4", 400),
+        ];
+        let o2 = upsert_commits(&mut conn, &batch2).unwrap();
+        assert_eq!(
+            o2,
+            UpsertOutcome {
+                generation: 2,
+                inserted: 1
+            }
+        );
+
+        // h3 keeps its original generation — it was *first* seen in batch 1,
+        // so batch 2's conflict-update must not rewrite first_seen_generation.
+        let h3_gen: i64 = conn
+            .query_row(
+                "SELECT first_seen_generation FROM commits WHERE hash = 'h3'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(h3_gen, 1, "first_seen_generation survives a re-upsert");
+
+        // h4 is stamped with batch 2's generation.
+        let h4_gen: i64 = conn
+            .query_row(
+                "SELECT first_seen_generation FROM commits WHERE hash = 'h4'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(h4_gen, 2);
+    }
+
+    #[test]
+    fn window_view_generation_hides_later_batches() {
+        let conn = test_db();
+        // Generation 1: 10 commits at the even timestamps.
+        for i in 0..10 {
+            insert_gen(&conn, 1, &format!("g1c{i:02}"), 1_000 + i * 2, "alice", 1);
+        }
+        // Generation 2: 10 commits interleaved at the odd timestamps between
+        // them — the scanner inserting into the middle of the timeline.
+        for i in 0..10 {
+            insert_gen(&conn, 1, &format!("g2c{i:02}"), 1_001 + i * 2, "alice", 2);
+        }
+
+        // A reader pinned to generation 1 sees only the generation-1 commits.
+        let pinned = TimelineFilters {
+            view_generation: Some(1),
+            ..Default::default()
+        };
+        let walked = walk(&conn, &pinned, 4);
+        assert_eq!(walked.len(), 10, "generation-2 inserts stay invisible");
+        assert!(
+            walked.iter().all(|h| h.starts_with("g1c")),
+            "only generation-1 commits, none from the later batch"
+        );
+        assert_eq!(count_commits(&conn, &pinned).unwrap(), 10);
+
+        // No pin sees every commit.
+        let all = TimelineFilters::default();
+        assert_eq!(walk(&conn, &all, 4).len(), 20);
+        assert_eq!(count_commits(&conn, &all).unwrap(), 20);
+
+        // Pinned to generation 2 also sees everything (1 <= 2 and 2 <= 2).
+        let pinned2 = TimelineFilters {
+            view_generation: Some(2),
+            ..Default::default()
+        };
+        assert_eq!(walk(&conn, &pinned2, 4).len(), 20);
+    }
+
+    #[test]
+    fn pinned_window_paginates_cleanly_while_newer_batches_arrive() {
+        let conn = test_db();
+        // The snapshot the reader pins: 40 commits at generation 1.
+        for i in 0..40 {
+            insert_gen(&conn, 1, &format!("base{i:02}"), 5_000 + i, "alice", 1);
+        }
+        let pinned = TimelineFilters {
+            view_generation: Some(1),
+            ..Default::default()
+        };
+
+        // Walk the snapshot a small page at a time; between every page a
+        // concurrent "scanner" batch lands at a later generation, interleaved
+        // into the same timestamp range. The pinned walk must be unaffected.
+        let mut out: Vec<String> = Vec::new();
+        let mut cursor: Option<Cursor> = None;
+        let mut intruder = 0;
+        loop {
+            let w =
+                list_commits_window(&conn, &pinned, cursor.as_ref(), WindowDirection::Older, 6)
+                    .unwrap();
+            out.extend(w.rows.iter().map(|c| c.hash.clone()));
+            insert_gen(&conn, 1, &format!("new{intruder:02}"), 5_000 + intruder, "bob", 2);
+            intruder += 1;
+            if !w.has_older {
+                break;
+            }
+            cursor = Some(w.end_cursor.expect("has_older implies an end cursor"));
+        }
+        assert_eq!(out.len(), 40, "exactly the pinned snapshot, no extra rows");
+        let unique: std::collections::HashSet<_> = out.iter().collect();
+        assert_eq!(unique.len(), 40, "no duplicates despite concurrent inserts");
+        assert!(out.iter().all(|h| h.starts_with("base")));
     }
 }

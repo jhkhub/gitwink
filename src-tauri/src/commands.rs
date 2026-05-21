@@ -129,7 +129,7 @@ pub async fn recent_commits(
         all.truncate(total);
 
         let mut conn = cache::open(&app).map_err(|e| e.to_string())?;
-        cache::upsert_commits(&mut conn, &all).map_err(|e| e.to_string())?;
+        let _ = cache::upsert_commits(&mut conn, &all).map_err(|e| e.to_string())?;
         Ok(all)
     })
     .await
@@ -181,6 +181,20 @@ pub async fn count_commits(
     tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
         let conn = cache::open(&app).map_err(|e| e.to_string())?;
         cache::count_commits(&conn, &filters).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Phase 2 windowed-pull API: the current commit generation. The frontend
+/// reads this once and pins it as its `view_generation` (a field on
+/// `TimelineFilters`) so the background scanner's later inserts never
+/// disturb the page sequence it is showing.
+#[tauri::command]
+pub async fn get_timeline_generation(app: AppHandle) -> Result<i64, String> {
+    tauri::async_runtime::spawn_blocking(move || -> Result<i64, String> {
+        let conn = cache::open(&app).map_err(|e| e.to_string())?;
+        cache::current_generation(&conn).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
@@ -678,13 +692,24 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
                     .collect::<Vec<_>>();
 
                 if !commits.is_empty() {
-                    if let Ok(mut conn) = cache::open(&app) {
-                        let _ = cache::upsert_commits(&mut conn, &commits);
-                    }
+                    let outcome = cache::open(&app)
+                        .ok()
+                        .and_then(|mut conn| cache::upsert_commits(&mut conn, &commits).ok());
                     let _ = app.emit(
                         "timeline://repo-fill",
                         TimelineRepoFill { commits, fresh: false },
                     );
+                    // Phase 2: also emit the lightweight windowed-pull signal.
+                    if let Some(o) = outcome {
+                        let _ = app.emit(
+                            "timeline://invalidated",
+                            cache::TimelineInvalidated {
+                                generation: o.generation,
+                                inserted: o.inserted,
+                                repo_path: path_str.clone(),
+                            },
+                        );
+                    }
                 }
 
                 // Attach the file watcher to this newly-discovered repo.

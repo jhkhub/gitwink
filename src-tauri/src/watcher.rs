@@ -238,14 +238,30 @@ fn refresh_repo(app: &AppHandle, repo_path: &Path) {
         return;
     }
 
-    if let Ok(mut conn) = cache::open(app) {
-        let _ = cache::upsert_commits(&mut conn, &commits);
-    }
+    let outcome = cache::open(app)
+        .ok()
+        .and_then(|mut conn| cache::upsert_commits(&mut conn, &commits).ok());
 
     let _ = app.emit(
         "timeline://repo-fill",
         RepoFillPayload { commits, fresh: true },
     );
+
+    // Phase 2: the lightweight windowed-pull signal. The `repo-fill` event
+    // above still ships the commit array for the current (pre-windowed)
+    // frontend; once Phase 3 moves the UI to windowed pull, this
+    // `invalidated` event — generation + affected repo, no payload arrays —
+    // becomes the only thing the scanner emits.
+    if let Some(o) = outcome {
+        let _ = app.emit(
+            "timeline://invalidated",
+            cache::TimelineInvalidated {
+                generation: o.generation,
+                inserted: o.inserted,
+                repo_path: repo_path.to_string_lossy().into_owned(),
+            },
+        );
+    }
 }
 
 fn unix_now() -> i64 {

@@ -284,6 +284,7 @@ pub fn run() {
             commands::list_commits_window,
             commands::list_commits_around_anchor,
             commands::count_commits,
+            commands::get_timeline_generation,
             commands::list_branches,
             commands::current_upstream_status,
             commands::explicit_add_repo,
