@@ -4,8 +4,9 @@
 // from the cache as the user scrolls, never held in full. Only the rows in
 // (and just around) the viewport are rendered as DOM — a top/bottom spacer
 // stands in for the rest — so the timeline stays light no matter how many
-// commits exist. Row height is fixed; the inline expansion collapses on
-// scroll so the virtualization math stays exact.
+// commits exist. Rows are a fixed height; the one open inline expansion is
+// measured and folded into the virtualization geometry so it survives
+// scrolling.
 
 import {
   Fragment,
@@ -109,13 +110,45 @@ export function TimelineWindowed({
     items: MenuItem[];
   } | null>(null);
   const hoverTimers = useRef(new Map<string, number>());
+  // Measured pixel height of the one open inline expansion (0 = none) —
+  // folded into the virtualization so the expanded row's extra height is
+  // exact and the expansion survives scrolling.
+  const [expansionH, setExpansionH] = useState(0);
+  const expansionObserver = useRef<ResizeObserver | null>(null);
 
-  // ----- virtual range -----
+  // ----- virtual range (the one open expansion folded into the geometry) ---
   const total = rows.length;
-  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-  const visibleCount = Math.ceil(viewportH / ROW_H) + OVERSCAN * 2;
-  const last = Math.min(total, first + visibleCount);
+  // Global index of the open expansion's row, or -1 when nothing is open /
+  // the expanded commit is no longer loaded.
+  const expandedIndex = expandedHash
+    ? rows.findIndex((r) => r.hash === expandedHash)
+    : -1;
+  const expH = expandedIndex >= 0 ? expansionH : 0;
+  // content-y of the top of row `i` — rows below the expansion sit `expH`
+  // lower than their bare row-height position.
+  const offsetOfRow = (i: number) =>
+    i * ROW_H + (expandedIndex >= 0 && i > expandedIndex ? expH : 0);
+  // inverse: the row index whose slot contains content-y `y`.
+  const rowAtOffset = (y: number) => {
+    if (expandedIndex < 0 || expH === 0) return Math.floor(y / ROW_H);
+    const expTop = (expandedIndex + 1) * ROW_H;
+    if (y < expTop) return Math.floor(y / ROW_H);
+    if (y < expTop + expH) return expandedIndex;
+    return expandedIndex + 1 + Math.floor((y - expTop - expH) / ROW_H);
+  };
+  const totalHeight = total * ROW_H + (expandedIndex >= 0 ? expH : 0);
+  const first = Math.max(0, rowAtOffset(scrollTop) - OVERSCAN);
+  const last = Math.min(
+    total,
+    rowAtOffset(scrollTop + viewportH) + OVERSCAN + 1,
+  );
   const visible = rows.slice(first, last);
+  const padTop = offsetOfRow(first);
+  const padBottom = Math.max(0, totalHeight - offsetOfRow(last));
+  // Ref mirror so the selection-scroll effect reads the live geometry
+  // without depending on (and re-firing for) every expansion resize.
+  const offsetOfRowRef = useRef(offsetOfRow);
+  offsetOfRowRef.current = offsetOfRow;
 
   // ----- viewport height (fixed panel, but observe to stay robust) -----
   useLayoutEffect(() => {
@@ -153,15 +186,27 @@ export function TimelineWindowed({
     setExpandedHash((cur) => (cur === hash ? null : hash));
   }, []);
 
-  // ----- scroll: virtual range + collapse-on-scroll + prefetch -----
+  // `ref` for the open expansion's <li>: measure its height (it grows as
+  // ChangedFiles loads in) and keep `expansionH` current for the
+  // virtualization. Called with null when the expansion unmounts.
+  const measureExpansion = useCallback((el: HTMLLIElement | null) => {
+    expansionObserver.current?.disconnect();
+    expansionObserver.current = null;
+    if (!el) {
+      setExpansionH(0);
+      return;
+    }
+    setExpansionH(el.offsetHeight);
+    const observer = new ResizeObserver(() => setExpansionH(el.offsetHeight));
+    observer.observe(el);
+    expansionObserver.current = observer;
+  }, []);
+
+  // ----- scroll: virtual range + prefetch -----
   const onScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     setScrollTop(el.scrollTop);
-    // Collapse the inline expansion the moment the user scrolls — keeps the
-    // fixed-height virtualization math exact (Phase 5 moves detail to a
-    // drawer and removes this constraint).
-    setExpandedHash((cur) => (cur != null ? null : cur));
     // Reaching the top with a pending "N new" pill = "show me the latest":
     // consume the pill and reload.
     if (newCount > 0 && el.scrollTop < ROW_H * 2) {
@@ -261,11 +306,12 @@ export function TimelineWindowed({
   }, [rows, selected, total, toggleExpand, expandedHash, copyAiContext]);
 
   // Bring the selected row into view (also feeds `onScroll`, so a keyboard
-  // move past the loaded edge triggers a prefetch).
+  // move past the loaded edge triggers a prefetch). Uses the live row
+  // geometry so a selection below the open expansion still lands right.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    const top = selected * ROW_H;
+    const top = offsetOfRowRef.current(selected);
     if (top < el.scrollTop) {
       el.scrollTop = top;
     } else if (top + ROW_H > el.scrollTop + el.clientHeight) {
@@ -273,12 +319,13 @@ export function TimelineWindowed({
     }
   }, [selected]);
 
-  // Clean up pending hover-prefetch timers on unmount.
+  // Clean up pending hover-prefetch timers + the expansion observer on unmount.
   useEffect(() => {
     const timers = hoverTimers.current;
     return () => {
       for (const id of timers.values()) window.clearTimeout(id);
       timers.clear();
+      expansionObserver.current?.disconnect();
     };
   }, []);
 
@@ -364,10 +411,7 @@ export function TimelineWindowed({
       ) : (
         <ul
           className="timeline-windowed-list timeline-all"
-          style={{
-            paddingTop: first * ROW_H,
-            paddingBottom: Math.max(0, total - last) * ROW_H,
-          }}
+          style={{ paddingTop: padTop, paddingBottom: padBottom }}
         >
           {visible.map((c, i) => {
             const idx = first + i;
@@ -447,6 +491,7 @@ export function TimelineWindowed({
                 {expandedHash === c.hash && (
                   <li
                     className="timeline-expansion"
+                    ref={measureExpansion}
                     onClick={(e) => e.stopPropagation()}
                   >
                     <CommitDetail commit={c} />
