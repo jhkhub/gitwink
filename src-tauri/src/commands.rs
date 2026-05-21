@@ -451,12 +451,11 @@ pub async fn open_diff(
 
     eprintln!("open_diff: building new diff window");
     let saved = settings::load(&app).diff_window;
-    let (init_w, init_h) = match saved {
-        Some(s) if monitor_can_contain(&app, s.x, s.y, s.w, s.h) => {
-            (s.w as f64, s.h as f64)
-        }
-        _ => default_diff_size(&app),
-    };
+    // Always open at the modest default size. A remembered window size
+    // restored across DPI scale factors was bloating the window (saved in
+    // physical px, re-applied as logical); the user resizes from here.
+    // Position + maximized state are still restored below.
+    let (init_w, init_h) = default_diff_size(&app);
 
     let mut builder = tauri::WebviewWindowBuilder::new(
         &app,
@@ -495,24 +494,22 @@ pub async fn open_diff(
     Ok(())
 }
 
-/// Pick a sensible default diff-window size based on the user's primary
-/// monitor — ~70% of its dimensions, clamped to [800x600 .. 1400x900] so
-/// it doesn't sprawl across multiple monitors on the first open.
+/// The diff window's default size — a modest fixed size the user resizes
+/// from. Returned in logical pixels (the window builder's `inner_size`
+/// unit). Clamped to fit the primary monitor so it never opens larger than
+/// the screen on a small display.
 fn default_diff_size(app: &AppHandle) -> (f64, f64) {
-    const MIN_W: f64 = 800.0;
-    const MIN_H: f64 = 600.0;
-    const MAX_W: f64 = 1400.0;
-    const MAX_H: f64 = 900.0;
+    const WANT_W: f64 = 1024.0;
+    const WANT_H: f64 = 720.0;
     if let Ok(Some(monitor)) = app.primary_monitor() {
-        let size = monitor.size();
         let scale = monitor.scale_factor();
-        let logical_w = size.width as f64 / scale;
-        let logical_h = size.height as f64 / scale;
-        let w = (logical_w * 0.70).clamp(MIN_W, MAX_W);
-        let h = (logical_h * 0.70).clamp(MIN_H, MAX_H);
+        let logical_w = monitor.size().width as f64 / scale;
+        let logical_h = monitor.size().height as f64 / scale;
+        let w = WANT_W.min(logical_w - 80.0).max(640.0);
+        let h = WANT_H.min(logical_h - 80.0).max(480.0);
         return (w, h);
     }
-    (1100.0, 750.0)
+    (WANT_W, WANT_H)
 }
 
 /// Sanity-check a saved (x, y, w, h) against the current monitor layout —
