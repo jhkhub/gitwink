@@ -177,7 +177,7 @@ export interface UpdateStatePayload {
  * Mirrors `cache::Cursor`. */
 export interface Cursor {
   sortTs: number;
-  repoId: number;
+  repoPath: string;
   hash: string;
 }
 

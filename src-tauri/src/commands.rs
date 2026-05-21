@@ -156,7 +156,7 @@ pub async fn list_commits_around_anchor(
 ) -> Result<cache::CommitAround, String> {
     tauri::async_runtime::spawn_blocking(move || -> Result<cache::CommitAround, String> {
         let conn = cache::open(&app).map_err(|e| e.to_string())?;
-        cache::list_commits_around_anchor(&conn, &filters, &anchor, before, after)
+        cache::list_commits_around_anchor(&conn, &filters, &anchor, before, after, None)
             .map_err(|e| e.to_string())
     })
     .await
@@ -848,9 +848,13 @@ pub async fn discover_repos(app: AppHandle) -> Result<usize, String> {
                     .collect::<Vec<_>>();
 
                 if !commits.is_empty() {
-                    let outcome = cache::open(&app)
-                        .ok()
-                        .and_then(|mut conn| cache::upsert_commits(&mut conn, &commits).ok());
+                    let outcome = cache::open(&app).ok().and_then(|mut conn| {
+                        // Upsert the repo row FIRST so upsert_commits can
+                        // resolve a real repo_id — its COALESCE falls back
+                        // to 0 when the repos row does not exist yet.
+                        cache::upsert_repos(&mut conn, std::slice::from_ref(&repo)).ok()?;
+                        cache::upsert_commits(&mut conn, &commits).ok()
+                    });
                     // Lightweight windowed-pull signal — the frontend
                     // re-pulls the affected windows from the cache.
                     if let Some(o) = outcome {

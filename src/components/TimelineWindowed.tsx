@@ -52,9 +52,6 @@ interface Props {
   windowDays: number | null;
   /** bumped by App when the panel is re-summoned */
   refreshNonce: number;
-  /** repoPath → `Repo.id` — the hook rebuilds a focused commit's keyset
-   *  cursor from this for filter-change recovery. */
-  repoIdByPath: Map<string, number>;
   /** clicking the repo cell jumps to single-repo mode */
   onSelectRepo: (repoPath: string) => void;
 }
@@ -97,7 +94,6 @@ export function TimelineWindowed({
   authors,
   windowDays,
   refreshNonce,
-  repoIdByPath,
   onSelectRepo,
 }: Props) {
   const {
@@ -115,7 +111,6 @@ export function TimelineWindowed({
     authors,
     windowDays,
     refreshNonce,
-    repoIdByPath,
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);

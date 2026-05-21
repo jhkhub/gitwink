@@ -54,9 +54,6 @@ export interface TimelineWindowParams {
   windowDays: number | null;
   /** bumped by the caller to force a reload (panel re-summoned) */
   refreshNonce: number;
-  /** repoPath → `Repo.id`, to rebuild a focused commit's keyset cursor for
-   *  filter-change recovery (a CommitSummary carries no repo id). */
-  repoIdByPath: Map<string, number>;
 }
 
 export interface TimelineWindowState {
@@ -316,7 +313,7 @@ export function useTimelineWindow(
           focusedHash = c.hash;
           anchorCursor = {
             sortTs: -c.timestamp,
-            repoId: p.repoIdByPath.get(c.repoPath) ?? 0,
+            repoPath: c.repoPath,
             hash: c.hash,
           };
         }
