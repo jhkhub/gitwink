@@ -36,6 +36,10 @@ const ANCHOR_AFTER = 150;
 const EXTEND_GAP = 120;
 /** Collapse a flurry of scroll events (a scrollbar drag) into one jump. */
 const JUMP_DEBOUNCE_MS = 100;
+/** Hard cap on the loaded window. Extending past it evicts the far edge,
+ *  so an uninterrupted scroll can't accumulate the whole history in
+ *  memory — the window stays bounded regardless of scroll distance. */
+const MAX_WINDOW = 600;
 
 /** Stable identity for a commit across reloads. */
 function commitKey(c: { repoPath: string; hash: string }): string {
@@ -43,6 +47,13 @@ function commitKey(c: { repoPath: string; hash: string }): string {
 }
 function nowSec(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+/** A commit's keyset cursor, reconstructed from the row itself — the cursor
+ *  is (sort_ts, repo_path, hash) with sort_ts = -timestamp, all carried by
+ *  the CommitSummary. Used to recompute an edge cursor after a window trim. */
+function cursorOf(c: CommitSummary): Cursor {
+  return { sortTs: -c.timestamp, repoPath: c.repoPath, hash: c.hash };
 }
 
 export interface TimelineWindowParams {
@@ -206,13 +217,25 @@ export function useTimelineWindow(
         .then((win) => {
           if (qid !== queryRef.current) return;
           const cur = windowRef.current;
-          const merged = [...cur.rows, ...win.rows];
+          let rows = [...cur.rows, ...win.rows];
+          let baseIndex = cur.baseIndex;
+          let startCursor = cur.startCursor;
+          // Cap the window — evict the rows now far above the viewport.
+          if (rows.length > MAX_WINDOW) {
+            const trim = rows.length - MAX_WINDOW;
+            rows = rows.slice(trim);
+            baseIndex += trim;
+            startCursor = cursorOf(rows[0]);
+          }
           windowRef.current = {
             ...cur,
-            rows: merged,
+            rows,
+            baseIndex,
+            startCursor,
             endCursor: win.endCursor ?? cur.endCursor,
           };
-          setRows(merged);
+          setRows(rows);
+          setBaseIndex(baseIndex);
         })
         .catch(() => {})
         .finally(() => {
@@ -232,16 +255,23 @@ export function useTimelineWindow(
         .then((win) => {
           if (qid !== queryRef.current) return;
           const cur = windowRef.current;
-          const merged = [...win.rows, ...cur.rows];
-          const newBase = Math.max(0, cur.baseIndex - win.rows.length);
+          let rows = [...win.rows, ...cur.rows];
+          const baseIndex = Math.max(0, cur.baseIndex - win.rows.length);
+          let endCursor = cur.endCursor;
+          // Cap the window — evict the rows now far below the viewport.
+          if (rows.length > MAX_WINDOW) {
+            rows = rows.slice(0, MAX_WINDOW);
+            endCursor = cursorOf(rows[rows.length - 1]);
+          }
           windowRef.current = {
             ...cur,
-            rows: merged,
-            baseIndex: newBase,
+            rows,
+            baseIndex,
             startCursor: win.startCursor ?? cur.startCursor,
+            endCursor,
           };
-          setRows(merged);
-          setBaseIndex(newBase);
+          setRows(rows);
+          setBaseIndex(baseIndex);
         })
         .catch(() => {})
         .finally(() => {
