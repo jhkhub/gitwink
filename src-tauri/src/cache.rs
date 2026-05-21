@@ -29,6 +29,42 @@ fn default_status() -> String {
 /// half the cap.
 pub const DIFF_CACHE_MAX_BYTES: i64 = 500 * 1024 * 1024;
 
+/// DDL for the `commits` table and its indexes (schema v3). Shared by the
+/// `open()` migration and the test fixtures so the two never drift.
+///
+/// `repo_id` and `sort_ts` are `NOT NULL DEFAULT 0` so the table also
+/// tolerates writes from older (pre-v3) builds during the rollout — they
+/// omit those columns rather than hitting a constraint error. v3's own
+/// `upsert_commits` always supplies real values.
+const COMMITS_SCHEMA_V3: &str = r#"
+CREATE TABLE commits (
+    repo_path TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    repo_id INTEGER NOT NULL DEFAULT 0,
+    repo_name TEXT NOT NULL,
+    short_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    author TEXT NOT NULL,
+    email TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    sort_ts INTEGER NOT NULL DEFAULT 0,
+    branch_label TEXT,
+    is_merge INTEGER NOT NULL DEFAULT 0,
+    is_tagged INTEGER NOT NULL DEFAULT 0,
+    parents TEXT NOT NULL DEFAULT '[]',
+    message TEXT NOT NULL DEFAULT '',
+    remote_tip_label TEXT,
+    remote_tip_extra_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (repo_path, hash)
+);
+-- Total-order index for keyset window queries. Newest-first = ascending on
+-- sort_ts (= -timestamp); repo_id + hash break ties into a deterministic
+-- total order, stable under concurrent scanner inserts.
+CREATE INDEX idx_commits_timeline ON commits(sort_ts, repo_id, hash);
+-- Retained for the legacy since-filtered list_recent_commits.
+CREATE INDEX idx_commits_ts ON commits(timestamp);
+"#;
+
 fn db_path(app: &AppHandle) -> Result<PathBuf> {
     let dir = app
         .path()
@@ -208,38 +244,9 @@ pub fn open(app: &AppHandle) -> Result<Connection> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap_or(0);
     if schema_ver < 3 {
-        conn.execute_batch(
-            r#"
-            DROP TABLE IF EXISTS commits;
-            CREATE TABLE commits (
-                repo_path TEXT NOT NULL,
-                hash TEXT NOT NULL,
-                repo_id INTEGER,
-                repo_name TEXT NOT NULL,
-                short_hash TEXT NOT NULL,
-                summary TEXT NOT NULL,
-                author TEXT NOT NULL,
-                email TEXT NOT NULL,
-                timestamp INTEGER NOT NULL,
-                sort_ts INTEGER NOT NULL,
-                branch_label TEXT,
-                is_merge INTEGER NOT NULL DEFAULT 0,
-                is_tagged INTEGER NOT NULL DEFAULT 0,
-                parents TEXT NOT NULL DEFAULT '[]',
-                message TEXT NOT NULL DEFAULT '',
-                remote_tip_label TEXT,
-                remote_tip_extra_count INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (repo_path, hash)
-            );
-            -- Total-order index for keyset window queries. Newest-first is
-            -- ascending on sort_ts (= -timestamp); repo_id + hash break ties
-            -- into a deterministic total order, stable under concurrent
-            -- scanner inserts.
-            CREATE INDEX idx_commits_timeline ON commits(sort_ts, repo_id, hash);
-            -- Retained for the legacy since-filtered list_recent_commits.
-            CREATE INDEX idx_commits_ts ON commits(timestamp);
-            "#,
-        )?;
+        // `commits` is a pure cache — drop and recreate it at the v3 schema.
+        conn.execute_batch("DROP TABLE IF EXISTS commits;")?;
+        conn.execute_batch(COMMITS_SCHEMA_V3)?;
     }
     let _ = conn.pragma_update(None, "user_version", 3_i64);
 
@@ -898,4 +905,163 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh in-memory DB carrying just the v3 `commits` schema.
+    fn test_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(COMMITS_SCHEMA_V3).unwrap();
+        conn
+    }
+
+    /// Insert one commit. `sort_ts` is derived from `ts` exactly as
+    /// `upsert_commits` does (= -timestamp).
+    fn insert(conn: &Connection, repo_id: i64, hash: &str, ts: i64, author: &str) {
+        conn.execute(
+            "INSERT INTO commits (repo_path, hash, repo_id, repo_name, \
+             short_hash, summary, author, email, timestamp, sort_ts) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                format!("/repo/{repo_id}"),
+                hash,
+                repo_id,
+                format!("repo{repo_id}"),
+                hash,
+                "summary",
+                author,
+                "dev@example.com",
+                ts,
+                -ts,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// Page through the whole timeline (Older direction) via the cursor
+    /// chain, returning hashes newest-first.
+    fn walk(conn: &Connection, filters: &TimelineFilters, page: usize) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cursor: Option<Cursor> = None;
+        loop {
+            let w =
+                list_commits_window(conn, filters, cursor.as_ref(), WindowDirection::Older, page)
+                    .unwrap();
+            out.extend(w.rows.iter().map(|c| c.hash.clone()));
+            if !w.has_older {
+                break;
+            }
+            cursor = Some(w.end_cursor.expect("has_older implies an end cursor"));
+        }
+        out
+    }
+
+    #[test]
+    fn window_paginates_without_gaps_or_dupes() {
+        let conn = test_db();
+        for i in 0..50 {
+            insert(&conn, 1, &format!("h{i:03}"), 1_000 + i, "alice");
+        }
+        let walked = walk(&conn, &TimelineFilters::default(), 7);
+        assert_eq!(walked.len(), 50);
+        let unique: std::collections::HashSet<_> = walked.iter().collect();
+        assert_eq!(unique.len(), 50, "no duplicates across pages");
+        assert_eq!(walked.first().unwrap().as_str(), "h049", "newest first");
+        assert_eq!(walked.last().unwrap().as_str(), "h000", "oldest last");
+    }
+
+    #[test]
+    fn identical_timestamps_keep_a_stable_total_order() {
+        let conn = test_db();
+        // 30 commits sharing one timestamp across 3 repos — the
+        // (sort_ts, repo_id, hash) total order must still paginate cleanly.
+        for repo in 1..=3 {
+            for i in 0..10 {
+                insert(&conn, repo, &format!("r{repo}c{i}"), 5_000, "bob");
+            }
+        }
+        let f = TimelineFilters::default();
+        let walked = walk(&conn, &f, 4);
+        assert_eq!(walked.len(), 30);
+        assert_eq!(
+            walked.iter().collect::<std::collections::HashSet<_>>().len(),
+            30,
+            "identical timestamps still paginate without gaps or dupes"
+        );
+        assert_eq!(walk(&conn, &f, 9), walked, "ordering is deterministic");
+    }
+
+    #[test]
+    fn count_and_filters() {
+        let conn = test_db();
+        for i in 0..20 {
+            insert(&conn, 1, &format!("a{i:02}"), 1_000 + i, "alice");
+        }
+        for i in 0..15 {
+            insert(&conn, 2, &format!("b{i:02}"), 1_000 + i, "bob");
+        }
+        assert_eq!(count_commits(&conn, &TimelineFilters::default()).unwrap(), 35);
+
+        let repo2 = TimelineFilters {
+            repo_ids: Some(vec![2]),
+            ..Default::default()
+        };
+        assert_eq!(count_commits(&conn, &repo2).unwrap(), 15);
+        assert_eq!(walk(&conn, &repo2, 6).len(), 15);
+
+        let alice = TimelineFilters {
+            authors: Some(vec!["alice".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(count_commits(&conn, &alice).unwrap(), 20);
+
+        // An explicit empty repo selection genuinely means "nothing".
+        let none = TimelineFilters {
+            repo_ids: Some(vec![]),
+            ..Default::default()
+        };
+        assert_eq!(count_commits(&conn, &none).unwrap(), 0);
+    }
+
+    #[test]
+    fn around_anchor_centres_on_a_present_anchor() {
+        let conn = test_db();
+        for i in 0..40 {
+            insert(&conn, 1, &format!("c{i:02}"), 2_000 + i, "alice");
+        }
+        let anchor = Cursor {
+            sort_ts: -2_020,
+            repo_id: 1,
+            hash: "c20".to_string(),
+        };
+        let around =
+            list_commits_around_anchor(&conn, &TimelineFilters::default(), &anchor, 5, 5).unwrap();
+        assert!(around.anchor_found);
+        assert_eq!(around.rows.len(), 11, "5 newer + anchor + 5 older");
+        assert_eq!(around.rows[0].hash.as_str(), "c25");
+        assert_eq!(around.rows[5].hash.as_str(), "c20", "anchor in the middle");
+        assert_eq!(around.rows[10].hash.as_str(), "c15");
+    }
+
+    #[test]
+    fn around_anchor_handles_a_missing_anchor() {
+        let conn = test_db();
+        for i in 0..20 {
+            insert(&conn, 1, &format!("d{i:02}"), 3_000 + i * 10, "alice");
+        }
+        // A cursor at a timestamp where no commit sits (between d09 and
+        // d10) is still a valid position in the total order.
+        let anchor = Cursor {
+            sort_ts: -3_095,
+            repo_id: 1,
+            hash: "zzz".to_string(),
+        };
+        let around =
+            list_commits_around_anchor(&conn, &TimelineFilters::default(), &anchor, 3, 3).unwrap();
+        assert!(!around.anchor_found);
+        assert_eq!(around.rows.len(), 6, "3 newer + 3 older, no anchor row");
+    }
 }
