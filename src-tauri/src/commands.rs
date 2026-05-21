@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
@@ -269,16 +269,144 @@ pub async fn hide_repo(
     .map_err(|e| e.to_string())?
 }
 
+/// Phase 6 detail-tier cache: an in-memory LRU of `changed_files` results,
+/// so expanding (or re-expanding) a commit doesn't recompute the git diff.
+/// Bounded by entry count; the file list of a very large commit is skipped
+/// (rare, and recomputing it on demand is fine). Lost on restart — it is a
+/// pure cache. Managed in `lib.rs` and shared by `changed_files` +
+/// `changed_files_batch`.
+pub struct ChangedFilesCache(std::sync::Mutex<ChangedFilesLru>);
+
+struct ChangedFilesLru {
+    /// key (`repo_path\0hash`) → (file list, last-access tick)
+    entries: std::collections::HashMap<String, (Vec<git::ChangedFile>, u64)>,
+    tick: u64,
+}
+
+/// Max cached commits before LRU eviction kicks in.
+const CHANGED_FILES_CACHE_CAP: usize = 256;
+/// Skip caching a commit whose changed-file list exceeds this — one huge
+/// entry would dominate the cache; recomputing it on demand is fine.
+const CHANGED_FILES_CACHE_MAX_FILES: usize = 1_000;
+/// Upper bound on commits one `changed_files_batch` call will process.
+const CHANGED_FILES_PREFETCH_CAP: usize = 100;
+
+impl Default for ChangedFilesCache {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(ChangedFilesLru {
+            entries: std::collections::HashMap::new(),
+            tick: 0,
+        }))
+    }
+}
+
+impl ChangedFilesCache {
+    fn key(repo_path: &str, hash: &str) -> String {
+        format!("{repo_path}\0{hash}")
+    }
+
+    fn get(&self, repo_path: &str, hash: &str) -> Option<Vec<git::ChangedFile>> {
+        let mut lru = self.0.lock().ok()?;
+        lru.tick += 1;
+        let tick = lru.tick;
+        let entry = lru.entries.get_mut(&Self::key(repo_path, hash))?;
+        entry.1 = tick;
+        Some(entry.0.clone())
+    }
+
+    fn contains(&self, repo_path: &str, hash: &str) -> bool {
+        self.0
+            .lock()
+            .map(|lru| lru.entries.contains_key(&Self::key(repo_path, hash)))
+            .unwrap_or(false)
+    }
+
+    fn put(&self, repo_path: &str, hash: &str, files: &[git::ChangedFile]) {
+        if files.len() > CHANGED_FILES_CACHE_MAX_FILES {
+            return;
+        }
+        let Ok(mut lru) = self.0.lock() else {
+            return;
+        };
+        lru.tick += 1;
+        let tick = lru.tick;
+        lru.entries
+            .insert(Self::key(repo_path, hash), (files.to_vec(), tick));
+        // Evict least-recently-used entries down to the cap.
+        while lru.entries.len() > CHANGED_FILES_CACHE_CAP {
+            let victim = lru
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone());
+            match victim {
+                Some(k) => {
+                    lru.entries.remove(&k);
+                }
+                None => break,
+            }
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn changed_files(
+    app: AppHandle,
     repo_path: String,
     hash: String,
 ) -> Result<Vec<git::ChangedFile>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        git::changed_files(Path::new(&repo_path), &hash).map_err(|e| e.to_string())
-    })
+    tauri::async_runtime::spawn_blocking(
+        move || -> Result<Vec<git::ChangedFile>, String> {
+            if let Some(cache) = app.try_state::<ChangedFilesCache>() {
+                if let Some(hit) = cache.get(&repo_path, &hash) {
+                    return Ok(hit);
+                }
+            }
+            let files = git::changed_files(Path::new(&repo_path), &hash)
+                .map_err(|e| e.to_string())?;
+            if let Some(cache) = app.try_state::<ChangedFilesCache>() {
+                cache.put(&repo_path, &hash, &files);
+            }
+            Ok(files)
+        },
+    )
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// One commit reference for `changed_files_batch`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitRef {
+    pub repo_path: String,
+    pub hash: String,
+}
+
+/// Phase 6 detail-tier prefetch: warm the `changed_files` cache for a set
+/// of commits — the rows in/near the timeline viewport — so expanding one
+/// is instant. Already-cached commits are skipped; the batch is capped so
+/// a huge request can't run unbounded git work.
+#[tauri::command]
+pub async fn changed_files_batch(
+    app: AppHandle,
+    commits: Vec<CommitRef>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(cache) = app.try_state::<ChangedFilesCache>() else {
+            return;
+        };
+        for c in commits.into_iter().take(CHANGED_FILES_PREFETCH_CAP) {
+            if cache.contains(&c.repo_path, &c.hash) {
+                continue;
+            }
+            if let Ok(files) = git::changed_files(Path::new(&c.repo_path), &c.hash) {
+                cache.put(&c.repo_path, &c.hash, &files);
+            }
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]

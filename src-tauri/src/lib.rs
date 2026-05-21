@@ -46,6 +46,7 @@ pub fn run() {
 
             app.manage(commands::PendingDiff::default());
             app.manage(commands::PanelSticky::default());
+            app.manage(commands::ChangedFilesCache::default());
             app.manage(discovery_orchestrator::ScanState::default());
 
             // Spin up the .git watcher and attach it to every repo the
@@ -292,6 +293,7 @@ pub fn run() {
             commands::hide_repo,
             commands::repo_commits,
             commands::changed_files,
+            commands::changed_files_batch,
             commands::file_diff,
             commands::commit_file_blobs,
             commands::open_diff,

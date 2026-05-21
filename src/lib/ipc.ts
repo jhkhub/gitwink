@@ -110,6 +110,19 @@ export async function prefetchCommit(
   }
 }
 
+/** Phase 6 detail-tier prefetch — warm the changed-files cache for a set of
+ * commits (the rows in/near the timeline viewport) so expanding one is
+ * instant. Fire-and-forget; the backend skips already-cached commits. */
+export async function changedFilesBatch(
+  commits: { repoPath: string; hash: string }[],
+): Promise<void> {
+  try {
+    await invoke("changed_files_batch", { commits });
+  } catch {
+    /* swallow */
+  }
+}
+
 export async function fileDiff(
   repoPath: string,
   hash: string,

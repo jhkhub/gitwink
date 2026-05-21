@@ -19,7 +19,12 @@ import {
 
 import type { CommitSummary } from "../types";
 import { buildCommitMenuItems, copyCommitAiContext } from "../lib/commitClipboard";
-import { onTimelineInvalidated, openDiff, prefetchCommit } from "../lib/ipc";
+import {
+  changedFilesBatch,
+  onTimelineInvalidated,
+  openDiff,
+  prefetchCommit,
+} from "../lib/ipc";
 import { useTimelineWindow } from "../lib/useTimelineWindow";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
@@ -242,6 +247,22 @@ export function TimelineWindowed({
       loadMore();
     }
   }, [status, hasMore, loadingMore, total, viewportH, loadMore]);
+
+  // Phase 6: prefetch the changed-file lists for the rows in view so
+  // expanding one is instant. Debounced — coalesces rapid scrolling into a
+  // single batch; the backend skips commits already cached.
+  useEffect(() => {
+    if (last <= first) return;
+    const batch = rows.slice(first, last).map((c) => ({
+      repoPath: c.repoPath,
+      hash: c.hash,
+    }));
+    if (batch.length === 0) return;
+    const timer = window.setTimeout(() => {
+      void changedFilesBatch(batch);
+    }, 200);
+    return () => window.clearTimeout(timer);
+  }, [rows, first, last]);
 
   // ----- scanner invalidation: debounced -----
   // At the top, auto-advance to the latest. Scrolled away, surface a
