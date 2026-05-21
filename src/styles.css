@@ -823,6 +823,38 @@ body,
   opacity: 0.45;
 }
 
+/* "N new commits" pill — floats at the top of the timeline viewport when
+   the scanner reports commits beyond the pinned snapshot and the reader is
+   scrolled away from the top. The anchor is a zero-height sticky element so
+   the pill overlays without disturbing the virtualization math. */
+.timeline-new-pill-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 5;
+}
+
+.timeline-new-pill {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border: none;
+  border-radius: 11px;
+  background: #5b5df0;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.timeline-new-pill:hover {
+  background: #6f71f3;
+}
+
 /* All-repos mode: marker · time · repo · summary · author */
 .timeline-all .timeline-row {
   display: grid;

@@ -81,14 +81,25 @@ export function TimelineWindowed({
   refreshNonce,
   onSelectRepo,
 }: Props) {
-  const { rows, hasMore, status, loadingMore, loadMore, reloadSoft } =
-    useTimelineWindow({ repoIds, authors, windowDays, refreshNonce });
+  const {
+    rows,
+    hasMore,
+    status,
+    loadingMore,
+    freshHashes,
+    loadMore,
+    reloadSoft,
+    countNew,
+  } = useTimelineWindow({ repoIds, authors, windowDays, refreshNonce });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
   const [selected, setSelected] = useState(0);
   const [expandedHash, setExpandedHash] = useState<string | null>(null);
+  // "N new commits" pill — set when the scanner reports new commits while
+  // the reader is scrolled away from the top.
+  const [newCount, setNewCount] = useState(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">(
     "idle",
   );
@@ -117,11 +128,12 @@ export function TimelineWindowed({
     return () => observer.disconnect();
   }, []);
 
-  // Reset selection, expansion + scroll to the top when the filter set
-  // changes — a fresh top-of-timeline reload.
+  // Reset selection, expansion, the "N new" pill + scroll to the top when
+  // the filter set changes — a fresh top-of-timeline reload.
   useEffect(() => {
     setSelected(0);
     setExpandedHash(null);
+    setNewCount(0);
     setScrollTop(0);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [repoIds, authors, windowDays, refreshNonce]);
@@ -150,6 +162,12 @@ export function TimelineWindowed({
     // fixed-height virtualization math exact (Phase 5 moves detail to a
     // drawer and removes this constraint).
     setExpandedHash((cur) => (cur != null ? null : cur));
+    // Reaching the top with a pending "N new" pill = "show me the latest":
+    // consume the pill and reload.
+    if (newCount > 0 && el.scrollTop < ROW_H * 2) {
+      setNewCount(0);
+      reloadSoft();
+    }
     if (
       hasMore &&
       el.scrollHeight - el.scrollTop - el.clientHeight <
@@ -157,7 +175,16 @@ export function TimelineWindowed({
     ) {
       loadMore();
     }
-  }, [hasMore, loadMore]);
+  }, [hasMore, loadMore, newCount, reloadSoft]);
+
+  // Click the "N new" pill — jump to the top and reload to the latest.
+  const handlePillClick = useCallback(() => {
+    setNewCount(0);
+    const el = scrollRef.current;
+    if (el) el.scrollTop = 0;
+    setScrollTop(0);
+    reloadSoft();
+  }, [reloadSoft]);
 
   // If the loaded rows don't fill the viewport yet, keep pulling pages.
   useEffect(() => {
@@ -171,9 +198,9 @@ export function TimelineWindowed({
     }
   }, [status, hasMore, loadingMore, total, viewportH, loadMore]);
 
-  // ----- scanner invalidation: debounced reload, but only at the top -----
-  // Auto-refreshing a scrolled-down reader would yank the page out from
-  // under them; the Phase 4 "N new" pill handles that case.
+  // ----- scanner invalidation: debounced -----
+  // At the top, auto-advance to the latest. Scrolled away, surface a
+  // "N new" pill instead of yanking the page out from under the reader.
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
@@ -181,8 +208,15 @@ export function TimelineWindowed({
     void onTimelineInvalidated(() => {
       if (timer) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
-        const el = scrollRef.current;
-        if (el && el.scrollTop < ROW_H * 2) reloadSoft();
+        void (async () => {
+          const el = scrollRef.current;
+          if (el && el.scrollTop < ROW_H * 2) {
+            reloadSoft();
+          } else {
+            const n = await countNew();
+            if (!disposed && n > 0) setNewCount(n);
+          }
+        })();
       }, INVALIDATE_DEBOUNCE_MS);
     }).then((un) => {
       if (disposed) un();
@@ -193,7 +227,7 @@ export function TimelineWindowed({
       unlisten?.();
       if (timer) window.clearTimeout(timer);
     };
-  }, [reloadSoft]);
+  }, [reloadSoft, countNew]);
 
   // ----- keyboard nav (j / k / Enter / c / Esc) -----
   useEffect(() => {
@@ -309,6 +343,18 @@ export function TimelineWindowed({
           onClose={() => setContextMenu(null)}
         />
       )}
+      {newCount > 0 && (
+        <div className="timeline-new-pill-anchor">
+          <button
+            type="button"
+            className="timeline-new-pill"
+            onClick={handlePillClick}
+            title="Jump to the latest commits"
+          >
+            ↑ {newCount} new commit{newCount === 1 ? "" : "s"}
+          </button>
+        </div>
+      )}
       {status === "error" ? (
         <p className="panel-empty">Couldn't load the timeline.</p>
       ) : status === "loading" && total === 0 ? (
@@ -342,7 +388,20 @@ export function TimelineWindowed({
                   onMouseEnter={() => onRowEnter(c)}
                   onMouseLeave={() => onRowLeave(c)}
                 >
-                  <span className={"timeline-marker " + m.cls} title={m.title}>
+                  <span
+                    className={
+                      "timeline-marker " +
+                      m.cls +
+                      (freshHashes.has(`${c.repoPath}:${c.hash}`)
+                        ? " fresh"
+                        : "")
+                    }
+                    title={
+                      freshHashes.has(`${c.repoPath}:${c.hash}`)
+                        ? `${m.title} (new)`
+                        : m.title
+                    }
+                  >
                     {m.glyph}
                   </span>
                   <span

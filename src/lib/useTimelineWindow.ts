@@ -7,6 +7,10 @@
 // scanner's concurrent inserts never disturb the page sequence, and tags
 // every fetch with a query id so stale IPC responses (from a superseded
 // filter / reload) are discarded.
+//
+// Phase 4 adds: `freshHashes` (commits that arrived during a live reload,
+// for the "new" marker) and `countNew` (how many commits exist beyond the
+// pinned snapshot, for the "N new" pill).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -21,6 +25,11 @@ import {
 /** Rows fetched per keyset page — a few panel-heights so a fast scroll
  * doesn't outrun the loader. */
 const PAGE_SIZE = 60;
+
+/** Stable identity for a commit across reloads. */
+function commitKey(c: { repoPath: string; hash: string }): string {
+  return `${c.repoPath}:${c.hash}`;
+}
 
 export interface TimelineWindowParams {
   /** repo-id filter, or null for all repos */
@@ -43,20 +52,27 @@ export interface TimelineWindowState {
   status: "loading" | "ready" | "error";
   /** a `loadMore` page fetch is in flight */
   loadingMore: boolean;
+  /** `repoPath:hash` keys of commits that arrived during a live reload
+   * since the user last looked — rendered with the "new" marker. */
+  freshHashes: Set<string>;
   /** append the next keyset page (no-op while loading / exhausted) */
   loadMore: () => void;
   /** re-pin the generation and reload from the top, WITHOUT a git refill —
    * for `timeline://invalidated` events (the watcher already wrote the
-   * cache) and any other "data changed under us" trigger. */
+   * cache) and the "N new" pill. Commits not in the prior view are flagged
+   * fresh. */
   reloadSoft: () => void;
+  /** how many commits now exist beyond the pinned snapshot under the
+   * current filters — drives the "N new" pill. */
+  countNew: () => Promise<number>;
 }
 
 function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-/** Live pagination cursor, mirrored out of React state so `loadMore` reads
- * the current values without being re-created on every render. */
+/** Live pagination cursor, mirrored out of React state so `loadMore` /
+ * `countNew` read the current values without being re-created per render. */
 interface PageRef {
   endCursor: Cursor | null;
   filter: TimelineFilters | null;
@@ -76,6 +92,7 @@ export function useTimelineWindow(
   );
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [freshHashes, setFreshHashes] = useState<Set<string>>(() => new Set());
 
   const pageRef = useRef<PageRef>({
     endCursor: null,
@@ -83,61 +100,94 @@ export function useTimelineWindow(
     hasMore: false,
     loadingMore: false,
   });
+  // `rows` mirrored as a ref so a soft reload can diff the new top page
+  // against the previously-loaded rows without `doLoad` capturing stale
+  // state. `count` mirrored so `countNew` reads the live pinned count.
+  const rowsRef = useRef<CommitSummary[]>([]);
+  const countRef = useRef(0);
 
   // Monotonic query id. Every (re)load bumps it; an in-flight response
-  // whose id is stale is dropped — this is the stale-IPC-response guard.
+  // whose id is stale is dropped — the stale-IPC-response guard.
   const queryRef = useRef(0);
 
   // Latest params, so the stable `doLoad` closure reads current values.
   const paramsRef = useRef(params);
   paramsRef.current = params;
 
-  const doLoad = useCallback(async (kickRefill: boolean) => {
-    const p = paramsRef.current;
-    const qid = ++queryRef.current;
-    setStatus("loading");
+  /** (Re)load the timeline from the top. `kickRefill` also fires a
+   * background git→cache refill; `softReload` diffs the new top page
+   * against the prior rows to flag freshly-arrived commits (a full reload
+   * instead clears the fresh set — it's a new view, nothing is "new"). */
+  const doLoad = useCallback(
+    async (kickRefill: boolean, softReload: boolean) => {
+      const p = paramsRef.current;
+      const qid = ++queryRef.current;
+      const priorKeys = softReload
+        ? new Set(rowsRef.current.map(commitKey))
+        : null;
+      setStatus("loading");
 
-    if (kickRefill) {
-      // Background git→cache refill. When it lands, reload once more (no
-      // second refill) so the freshly-pinned generation sees its commits.
-      recentCommits(p.windowDays)
-        .then(() => {
-          if (qid === queryRef.current) void doLoad(false);
-        })
-        .catch(() => {});
-    }
+      if (kickRefill) {
+        // Background git→cache refill. When it lands, reload once more (no
+        // second refill) so the freshly-pinned generation sees its commits.
+        recentCommits(p.windowDays)
+          .then(() => {
+            if (qid === queryRef.current) void doLoad(false, false);
+          })
+          .catch(() => {});
+      }
 
-    try {
-      const generation = await getTimelineGeneration();
-      if (qid !== queryRef.current) return;
-      const since =
-        p.windowDays == null ? null : nowSec() - p.windowDays * 86_400;
-      const filter: TimelineFilters = {
-        repoIds: p.repoIds,
-        authors: p.authors,
-        since,
-        viewGeneration: generation,
-      };
-      const [cnt, win] = await Promise.all([
-        countCommits(filter),
-        listCommitsWindow(filter, null, "older", PAGE_SIZE),
-      ]);
-      if (qid !== queryRef.current) return;
-      pageRef.current = {
-        endCursor: win.endCursor,
-        filter,
-        hasMore: win.hasOlder,
-        loadingMore: false,
-      };
-      setCount(cnt);
-      setRows(win.rows);
-      setHasMore(win.hasOlder);
-      setLoadingMore(false);
-      setStatus("ready");
-    } catch {
-      if (qid === queryRef.current) setStatus("error");
-    }
-  }, []);
+      try {
+        const generation = await getTimelineGeneration();
+        if (qid !== queryRef.current) return;
+        const since =
+          p.windowDays == null ? null : nowSec() - p.windowDays * 86_400;
+        const filter: TimelineFilters = {
+          repoIds: p.repoIds,
+          authors: p.authors,
+          since,
+          viewGeneration: generation,
+        };
+        const [cnt, win] = await Promise.all([
+          countCommits(filter),
+          listCommitsWindow(filter, null, "older", PAGE_SIZE),
+        ]);
+        if (qid !== queryRef.current) return;
+        pageRef.current = {
+          endCursor: win.endCursor,
+          filter,
+          hasMore: win.hasOlder,
+          loadingMore: false,
+        };
+        rowsRef.current = win.rows;
+        countRef.current = cnt;
+        setCount(cnt);
+        setRows(win.rows);
+        setHasMore(win.hasOlder);
+        setLoadingMore(false);
+        setStatus("ready");
+        if (priorKeys) {
+          // Soft reload: any row not in the prior view is freshly arrived.
+          const added = win.rows
+            .map(commitKey)
+            .filter((k) => !priorKeys.has(k));
+          if (added.length > 0) {
+            setFreshHashes((prev) => {
+              const next = new Set(prev);
+              for (const k of added) next.add(k);
+              return next;
+            });
+          }
+        } else {
+          // Full reload — a fresh view, nothing is "new".
+          setFreshHashes(new Set());
+        }
+      } catch {
+        if (qid === queryRef.current) setStatus("error");
+      }
+    },
+    [],
+  );
 
   const loadMore = useCallback(() => {
     const pg = pageRef.current;
@@ -153,7 +203,8 @@ export function useTimelineWindow(
         if (qid !== queryRef.current) return; // a reload superseded this page
         pageRef.current.endCursor = win.endCursor ?? pageRef.current.endCursor;
         pageRef.current.hasMore = win.hasOlder;
-        setRows((prev) => [...prev, ...win.rows]);
+        rowsRef.current = [...rowsRef.current, ...win.rows];
+        setRows(rowsRef.current);
         setHasMore(win.hasOlder);
       } catch {
         // Transient — leave hasMore set so a later scroll retries.
@@ -167,16 +218,51 @@ export function useTimelineWindow(
   }, []);
 
   const reloadSoft = useCallback(() => {
-    void doLoad(false);
+    void doLoad(false, true);
   }, [doLoad]);
+
+  const countNew = useCallback(async (): Promise<number> => {
+    const filter = pageRef.current.filter;
+    if (!filter) return 0;
+    try {
+      // viewGeneration null = no snapshot pin = the live total.
+      const latest = await countCommits({ ...filter, viewGeneration: null });
+      return Math.max(0, latest - countRef.current);
+    } catch {
+      return 0;
+    }
+  }, []);
 
   // (Re)load from the top whenever the filters or refreshNonce change.
   // The key string absorbs the referential instability of the array props.
   const filterKey = JSON.stringify([repoIds, authors, windowDays, refreshNonce]);
   useEffect(() => {
-    void doLoad(true);
+    void doLoad(true, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey]);
 
-  return { rows, count, hasMore, status, loadingMore, loadMore, reloadSoft };
+  // Clear the fresh markers when the panel loses focus — the user has
+  // "seen" what was new. The delay + hasFocus check keeps a tray-menu or
+  // chip-dropdown blur from wiping them mid-interaction.
+  useEffect(() => {
+    function onBlur() {
+      window.setTimeout(() => {
+        if (!document.hasFocus()) setFreshHashes(new Set());
+      }, 200);
+    }
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
+
+  return {
+    rows,
+    count,
+    hasMore,
+    status,
+    loadingMore,
+    freshHashes,
+    loadMore,
+    reloadSoft,
+    countNew,
+  };
 }
