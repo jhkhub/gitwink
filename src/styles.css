@@ -911,9 +911,10 @@ body,
   /* placeholder so the grid keeps the lane column free for the absolute SVG */
 }
 
+/* Single-repo lane SVG. Windowed: `top` is set inline to the visible
+   band's content-Y; only band-intersecting nodes/edges are emitted. */
 .lane-graph {
   position: absolute;
-  top: 0;
   left: 12px; /* matches timeline-row padding-left */
   pointer-events: none;
   display: block;

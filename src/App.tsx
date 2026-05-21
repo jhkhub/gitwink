@@ -774,7 +774,6 @@ function App() {
             <Timeline
               key={`single:${selectedRepoPath}`}
               commits={filteredCommits}
-              mode="single"
               branches={branches}
             />
           )
