@@ -191,19 +191,18 @@ pub async fn get_timeline_generation(app: AppHandle) -> Result<i64, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Phase 3 windowed-pull API: distinct authors under `filters`, for the
-/// AuthorsChip facet list. The windowed timeline no longer holds a full
-/// client-side commit array to tally, so the author list is a backend
-/// facet query.
+/// Phase 3/7 windowed-pull API: the AuthorsChip + RepoChip filter facets
+/// (author tallies + per-repo commit counts) under `filters`. The windowed
+/// timeline holds no full client-side commit array to tally from.
 #[tauri::command]
-pub async fn list_timeline_authors(
+pub async fn list_filter_facets(
     app: AppHandle,
     filters: cache::TimelineFilters,
-) -> Result<Vec<cache::AuthorTally>, String> {
+) -> Result<cache::FilterFacets, String> {
     tauri::async_runtime::spawn_blocking(
-        move || -> Result<Vec<cache::AuthorTally>, String> {
+        move || -> Result<cache::FilterFacets, String> {
             let conn = cache::open(&app).map_err(|e| e.to_string())?;
-            cache::list_timeline_authors(&conn, &filters).map_err(|e| e.to_string())
+            cache::list_filter_facets(&conn, &filters).map_err(|e| e.to_string())
         },
     )
     .await

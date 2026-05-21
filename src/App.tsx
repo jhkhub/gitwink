@@ -18,8 +18,8 @@ import {
   getScanState,
   hideRepo,
   listBranches,
+  listFilterFacets,
   listRepos,
-  listTimelineAuthors,
   onOrchestratorProgress,
   onPanelShown,
   onRepoDiscovered,
@@ -121,9 +121,13 @@ function App() {
   const [allRepos, setAllRepos] = useState<Repo[]>([]);
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([]);
-  // All-repos author facet — the windowed timeline keeps no full client-
-  // side commit array to tally, so the AuthorsChip list is a backend query.
+  // All-repos filter facets — the windowed timeline keeps no full client-
+  // side commit array, so the AuthorsChip list + the RepoChip per-repo
+  // counts come from a backend facet.
   const [authorsAll, setAuthorsAll] = useState<AuthorTally[]>([]);
+  const [repoCounts, setRepoCounts] = useState<Map<number, number>>(
+    () => new Map(),
+  );
 
   const [windowDays, setWindowDays] = useState<WindowDays>(7);
   const [selectedRepoPath, setSelectedRepoPath] = useState<string | null>(null);
@@ -318,10 +322,10 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ----- all-repos mode: author facet -----
+  // ----- all-repos mode: filter facets (authors + per-repo counts) -----
   // The windowed timeline drops the full client-side commit array, so the
-  // AuthorsChip list comes from a backend facet. Refreshed on time-window
-  // change and on panel re-summon.
+  // AuthorsChip list + RepoChip counts come from a backend facet.
+  // Refreshed on time-window change and on panel re-summon.
   useEffect(() => {
     if (singleMode) return;
     let cancelled = false;
@@ -331,8 +335,10 @@ function App() {
         : Math.floor(Date.now() / 1000) - windowDays * 86_400;
     (async () => {
       try {
-        const list = await listTimelineAuthors({ since });
-        if (!cancelled) setAuthorsAll(list);
+        const facets = await listFilterFacets({ since });
+        if (cancelled) return;
+        setAuthorsAll(facets.authors);
+        setRepoCounts(new Map(facets.repos.map((r) => [r.repoId, r.count])));
       } catch {}
     })();
     return () => {
@@ -685,6 +691,7 @@ function App() {
             onToggle={() => setOpenChip(openChip === "repo" ? null : "repo")}
             onClose={() => setOpenChip(null)}
             repos={allRepos}
+            repoCounts={repoCounts}
             pinned={pinnedRepos}
             selectedPath={selectedRepoPath}
             selectedPaths={selectedRepoPaths}

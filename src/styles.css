@@ -533,6 +533,20 @@ body,
   opacity: 0.6;
 }
 
+/* RepoChip item title row — repo name + commit-count facet on one line,
+   the path renders on the line below. */
+.chip-item-titleline {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+.chip-item-titleline .chip-item-name {
+  flex: 1;
+  min-width: 0;
+}
+
 .chip-check {
   display: inline-block;
   width: 12px;

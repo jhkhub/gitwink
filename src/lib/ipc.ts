@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
-  AuthorTally,
   BranchInfo,
   ChangedFile,
   CommitFileBlobs,
@@ -10,6 +9,7 @@ import type {
   CommitWindow,
   Cursor,
   DiscoveredRepo,
+  FilterFacets,
   OrchestratorScanProgress,
   Repo,
   ScanComplete,
@@ -280,12 +280,13 @@ export async function getTimelineGeneration(): Promise<number> {
   return invoke<number>("get_timeline_generation");
 }
 
-/** Distinct authors under `filters` — the AuthorsChip facet. The windowed
- * timeline no longer holds a full client-side array to tally itself. */
-export async function listTimelineAuthors(
+/** The timeline's filter facets (author tallies + per-repo commit counts)
+ * under `filters` — the AuthorsChip + RepoChip count sources. The windowed
+ * timeline holds no full client-side commit array to tally itself. */
+export async function listFilterFacets(
   filters: TimelineFilters,
-): Promise<AuthorTally[]> {
-  return invoke<AuthorTally[]>("list_timeline_authors", { filters });
+): Promise<FilterFacets> {
+  return invoke<FilterFacets>("list_filter_facets", { filters });
 }
 
 /** Lightweight scanner→UI signal: a new generation landed (a `git commit`

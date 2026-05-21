@@ -8,6 +8,8 @@ interface Props {
   onToggle: () => void;
   onClose: () => void;
   repos: Repo[];
+  /** repo id → commit count in the active time window (RepoChip facet). */
+  repoCounts: Map<number, number>;
   pinned: string[];
   selectedPath: string | null;
   selectedPaths: string[] | "all";
@@ -23,6 +25,7 @@ export function RepoChip({
   onToggle,
   onClose,
   repos,
+  repoCounts,
   pinned,
   selectedPath,
   selectedPaths,
@@ -170,6 +173,7 @@ export function RepoChip({
               <RepoItem
                 key={r.path}
                 repo={r}
+                count={repoCounts.get(r.id)}
                 pinned={livePinned.has(r.path)}
                 active={selectedPath === r.path}
                 selected={Array.isArray(selectedPaths) && selectedPaths.includes(r.path)}
@@ -238,6 +242,7 @@ export function RepoChip({
 
 function RepoItem({
   repo,
+  count,
   pinned,
   active,
   selected,
@@ -248,6 +253,9 @@ function RepoItem({
   onHide,
 }: {
   repo: Repo;
+  /** commit count in the active window, or undefined when the repo has
+   * none / its id isn't resolved yet. */
+  count?: number;
   pinned: boolean;
   active: boolean;
   selected: boolean;
@@ -306,10 +314,15 @@ function RepoItem({
             : repo.path
         }
       >
-        <span className="chip-item-name">
-          {repo.name}
-          {isMissing && (
-            <span className="chip-item-missing-tag"> · missing</span>
+        <span className="chip-item-titleline">
+          <span className="chip-item-name">
+            {repo.name}
+            {isMissing && (
+              <span className="chip-item-missing-tag"> · missing</span>
+            )}
+          </span>
+          {count != null && (
+            <span className="chip-item-count">{count}</span>
           )}
         </span>
         <span className="chip-item-path">{repo.path}</span>

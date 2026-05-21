@@ -877,23 +877,42 @@ pub struct AuthorTally {
     pub last_activity: i64,
 }
 
-/// Distinct commit authors under `filters`, most-recent activity first.
-/// Phase 3's windowed timeline drops the full client-side commit array,
-/// so the AuthorsChip can no longer tally authors itself — this is its
-/// facet source. Callers pass the time-window (`since`) + generation pin
-/// but leave `authors` unset, so the list covers every selectable author.
-pub fn list_timeline_authors(
+/// Per-repo commit count under the active filters — the RepoChip facet.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommitCount {
+    pub repo_id: i64,
+    pub count: i64,
+}
+
+/// The timeline's filter facets: author tallies + per-repo commit counts
+/// under `filters`. Phase 3's windowed timeline drops the full client-side
+/// commit array, so the AuthorsChip / RepoChip can't tally these
+/// themselves — this is their facet source, computed in one call.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterFacets {
+    pub authors: Vec<AuthorTally>,
+    pub repos: Vec<RepoCommitCount>,
+}
+
+/// Compute the author + repo facets under `filters`. Authors come back
+/// most-recent-activity first. Callers pass the time window (`since`) but
+/// typically leave `repo_ids` / `authors` unset, so each facet covers
+/// every selectable value.
+pub fn list_filter_facets(
     conn: &Connection,
     filters: &TimelineFilters,
-) -> Result<Vec<AuthorTally>> {
+) -> Result<FilterFacets> {
     let (filter_sql, bind) = build_filter_sql(filters);
-    let sql = format!(
+
+    let authors_sql = format!(
         "SELECT author, COUNT(*) AS cnt, MAX(timestamp) AS last \
          FROM commits WHERE 1=1{filter_sql} \
          GROUP BY author ORDER BY last DESC"
     );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt
+    let mut stmt = conn.prepare(&authors_sql)?;
+    let authors = stmt
         .query_map(rusqlite::params_from_iter(bind.iter()), |r| {
             Ok(AuthorTally {
                 name: r.get(0)?,
@@ -902,7 +921,23 @@ pub fn list_timeline_authors(
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
+    drop(stmt);
+
+    let repos_sql = format!(
+        "SELECT repo_id, COUNT(*) AS cnt \
+         FROM commits WHERE 1=1{filter_sql} GROUP BY repo_id"
+    );
+    let mut stmt = conn.prepare(&repos_sql)?;
+    let repos = stmt
+        .query_map(rusqlite::params_from_iter(bind.iter()), |r| {
+            Ok(RepoCommitCount {
+                repo_id: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(FilterFacets { authors, repos })
 }
 
 /// Rows centred on an anchor cursor — `before` rows newer + the anchor row
@@ -1440,5 +1475,34 @@ mod tests {
         let unique: std::collections::HashSet<_> = out.iter().collect();
         assert_eq!(unique.len(), 40, "no duplicates despite concurrent inserts");
         assert!(out.iter().all(|h| h.starts_with("base")));
+    }
+
+    #[test]
+    fn filter_facets_tally_authors_and_repos() {
+        let conn = test_db();
+        // repo 1: 3 by alice + 2 by bob. repo 2: 4 by alice.
+        for i in 0..3 {
+            insert(&conn, 1, &format!("a{i}"), 1_000 + i, "alice");
+        }
+        for i in 0..2 {
+            insert(&conn, 1, &format!("b{i}"), 2_000 + i, "bob");
+        }
+        for i in 0..4 {
+            insert(&conn, 2, &format!("c{i}"), 3_000 + i, "alice");
+        }
+
+        let facets = list_filter_facets(&conn, &TimelineFilters::default()).unwrap();
+
+        // Authors: alice 7 (3 + 4), bob 2.
+        let alice = facets.authors.iter().find(|a| a.name == "alice").unwrap();
+        assert_eq!(alice.count, 7);
+        let bob = facets.authors.iter().find(|a| a.name == "bob").unwrap();
+        assert_eq!(bob.count, 2);
+
+        // Repos: repo 1 → 5, repo 2 → 4.
+        let r1 = facets.repos.iter().find(|r| r.repo_id == 1).unwrap();
+        assert_eq!(r1.count, 5);
+        let r2 = facets.repos.iter().find(|r| r.repo_id == 2).unwrap();
+        assert_eq!(r2.count, 4);
     }
 }

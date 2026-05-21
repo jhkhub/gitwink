@@ -114,6 +114,20 @@ export interface AuthorTally {
   lastActivity: number;
 }
 
+/** Per-repo commit count under the active filters — mirrors
+ * `cache::RepoCommitCount`. */
+export interface RepoCommitCount {
+  repoId: number;
+  count: number;
+}
+
+/** The timeline's filter facets (author tallies + per-repo commit counts)
+ * — mirrors `cache::FilterFacets`. */
+export interface FilterFacets {
+  authors: AuthorTally[];
+  repos: RepoCommitCount[];
+}
+
 export type ChangedFileStatus =
   | "modified"
   | "new"
