@@ -902,14 +902,15 @@ body,
   grid-template-columns: 28px 36px minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: calc(6px * var(--ui-scale, 1)) 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   cursor: default;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   /* Fixed height — the windowed timeline's virtualization math relies on
-     every all-repos row being exactly this tall. */
-  height: 31px;
+     every all-repos row being exactly this tall. --timeline-row-h is set
+     from JS (lib/settings) to the exact integer that geometry uses. */
+  height: var(--timeline-row-h, 31px);
   box-sizing: border-box;
 }
 
@@ -953,12 +954,12 @@ body,
   grid-template-columns: 80px 36px minmax(0, 3fr) minmax(0, 1fr);
   gap: 10px;
   align-items: baseline;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: calc(6px * var(--ui-scale, 1)) 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   cursor: default;
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
-  height: 31px;
+  height: var(--timeline-row-h, 31px);
   box-sizing: border-box;
 }
 
@@ -1008,7 +1009,7 @@ body,
 
 .timeline-marker {
   text-align: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   line-height: 1;
   opacity: 0.55;
   transition: color 200ms, opacity 200ms;
@@ -1017,7 +1018,7 @@ body,
 .timeline-marker.fresh {
   color: #5b5df0;
   opacity: 1;
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
   text-shadow: 0 0 6px rgba(91, 93, 240, 0.35);
 }
 
@@ -1071,7 +1072,7 @@ body,
   margin-right: 6px;
   padding: 0 5px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 600;
   background: rgba(80, 130, 240, 0.14);
   color: rgba(80, 130, 240, 0.95);
@@ -1095,7 +1096,7 @@ body,
   padding: 0 5px;
   border-radius: 3px;
   font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-weight: 500;
   background: rgba(0, 0, 0, 0.05);
   color: rgba(0, 0, 0, 0.55);
@@ -1112,7 +1113,7 @@ body,
 
 .timeline-author {
   opacity: 0.5;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1632,7 +1633,7 @@ body,
 
 .sbs {
   font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.45;
   height: 100%;
   display: flex;
@@ -1681,7 +1682,7 @@ body,
   width: 100%;
   padding: 4px 10px;
   opacity: 0.7;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   border-top: 1px solid rgba(0, 0, 0, 0.06);
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
   white-space: nowrap;
@@ -1705,11 +1706,11 @@ body,
 
 .sbs-line {
   display: grid;
-  grid-template-columns: 44px 16px max-content;
+  grid-template-columns: calc(44px * var(--ui-scale, 1)) calc(16px * var(--ui-scale, 1)) max-content;
   width: 100%;
   align-items: baseline;
   padding: 0 6px;
-  min-height: 18px;
+  min-height: calc(18px * var(--ui-scale, 1));
   white-space: pre;
 }
 
@@ -1745,7 +1746,7 @@ body,
   text-align: right;
   opacity: 0.45;
   user-select: none;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   padding-right: 6px;
   position: sticky;
   left: 0;
@@ -1758,7 +1759,7 @@ body,
   user-select: none;
   font-weight: 700;
   position: sticky;
-  left: 44px;
+  left: calc(44px * var(--ui-scale, 1));
   background: inherit;
 }
 
@@ -2072,4 +2073,47 @@ body,
   margin: 0 0 16px;
   font-size: 17px;
   font-weight: 600;
+}
+
+.settings-section + .settings-section {
+  margin-top: 22px;
+}
+
+.settings-section-title {
+  margin: 0 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.55;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-label {
+  flex: 0 0 64px;
+  font-size: 13px;
+}
+
+.settings-slider {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-value {
+  flex: 0 0 44px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.settings-hint {
+  margin: 8px 0 0;
+  font-size: 11px;
+  opacity: 0.5;
 }

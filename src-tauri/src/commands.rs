@@ -734,6 +734,12 @@ pub fn set_branch_selection(app: AppHandle, repo_path: String, selection: Vec<St
 
 // ----- app settings (settings window) -----
 
+/// UI-scale bounds. The floor is 100% — the diff/timeline default is
+/// already the most compact legible size, so going smaller would hurt
+/// readability, which is the whole point of the control.
+const UI_SCALE_MIN: f32 = 1.0;
+const UI_SCALE_MAX: f32 = 1.6;
+
 /// The user-facing slice of settings the Settings window reads + writes.
 /// camelCase so it maps straight onto the TypeScript `AppSettings`.
 #[derive(Serialize)]
@@ -751,7 +757,7 @@ pub struct AppSettings {
 pub fn get_settings(app: AppHandle) -> AppSettings {
     let s = settings::load(&app);
     AppSettings {
-        ui_scale: s.ui_scale.unwrap_or(1.0),
+        ui_scale: s.ui_scale.unwrap_or(1.0).clamp(UI_SCALE_MIN, UI_SCALE_MAX),
         diff_font_family: s.diff_font_family,
         panel_hotkey: s
             .panel_hotkey
@@ -760,11 +766,12 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
     }
 }
 
-/// Persist the UI scale. Clamped to a sane range — the slider enforces the
-/// same bounds; this is the backstop against a hand-edited settings.json.
+/// Persist the UI scale, clamped to [UI_SCALE_MIN, UI_SCALE_MAX]. The
+/// slider enforces the same bounds; this is the backstop against a
+/// hand-edited settings.json.
 #[tauri::command]
 pub fn set_ui_scale(app: AppHandle, scale: f32) {
-    settings::save_ui_scale(&app, Some(scale.clamp(0.7, 2.0)));
+    settings::save_ui_scale(&app, Some(scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)));
 }
 
 /// Persist the diff font family. An empty/whitespace value clears it,
