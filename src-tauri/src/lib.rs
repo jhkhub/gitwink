@@ -246,6 +246,15 @@ pub fn run() {
                             if diff_visible {
                                 return;
                             }
+                            // Same for the settings window — interacting
+                            // with it must not dismiss the panel behind it.
+                            let settings_visible = handle_clone
+                                .get_webview_window("settings")
+                                .and_then(|w| w.is_visible().ok())
+                                .unwrap_or(false);
+                            if settings_visible {
+                                return;
+                            }
                             window::hide_panel(&handle_clone);
                         });
                     }
@@ -311,6 +320,10 @@ pub fn run() {
             commands::update_install,
             commands::update_skip,
             commands::update_snooze,
+            commands::get_settings,
+            commands::set_ui_scale,
+            commands::set_diff_font,
+            commands::set_panel_hotkey,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

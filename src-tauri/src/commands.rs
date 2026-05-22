@@ -732,6 +732,86 @@ pub fn set_branch_selection(app: AppHandle, repo_path: String, selection: Vec<St
     settings::save_branch_selection(&app, &repo_path, selection);
 }
 
+// ----- app settings (settings window) -----
+
+/// The user-facing slice of settings the Settings window reads + writes.
+/// camelCase so it maps straight onto the TypeScript `AppSettings`.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    /// UI scale multiplier; 1.0 = default.
+    pub ui_scale: f32,
+    /// Diff font family, or `None` for the built-in monospace stack.
+    pub diff_font_family: Option<String>,
+    /// Effective global hotkey spec — the resolved default if unset.
+    pub panel_hotkey: String,
+}
+
+#[tauri::command]
+pub fn get_settings(app: AppHandle) -> AppSettings {
+    let s = settings::load(&app);
+    AppSettings {
+        ui_scale: s.ui_scale.unwrap_or(1.0),
+        diff_font_family: s.diff_font_family,
+        panel_hotkey: s
+            .panel_hotkey
+            .filter(|h| !h.trim().is_empty())
+            .unwrap_or_else(|| settings::DEFAULT_PANEL_HOTKEY.to_string()),
+    }
+}
+
+/// Persist the UI scale. Clamped to a sane range — the slider enforces the
+/// same bounds; this is the backstop against a hand-edited settings.json.
+#[tauri::command]
+pub fn set_ui_scale(app: AppHandle, scale: f32) {
+    settings::save_ui_scale(&app, Some(scale.clamp(0.7, 2.0)));
+}
+
+/// Persist the diff font family. An empty/whitespace value clears it,
+/// falling back to the built-in monospace stack.
+#[tauri::command]
+pub fn set_diff_font(app: AppHandle, family: Option<String>) {
+    let cleaned = family
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty());
+    settings::save_diff_font_family(&app, cleaned);
+}
+
+/// Re-bind the global panel hotkey live — no restart. Validates the spec,
+/// drops the old binding, registers the new one, and only then persists.
+/// On failure (unparseable, or already held by another app — Windows
+/// registers globally, first-bind wins) the previous binding is restored
+/// and the error returned for inline feedback.
+#[tauri::command]
+pub fn set_panel_hotkey(app: AppHandle, spec: String) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+
+    let trimmed = spec.trim();
+    let new_shortcut: Shortcut = trimmed
+        .parse()
+        .map_err(|e| format!("Not a valid shortcut: {e}"))?;
+
+    let gs = app.global_shortcut();
+    // gitwink only ever holds one global shortcut — drop it wholesale.
+    let _ = gs.unregister_all();
+    match gs.register(new_shortcut) {
+        Ok(()) => {
+            settings::save_panel_hotkey(&app, Some(trimmed.to_string()));
+            Ok(())
+        }
+        Err(e) => {
+            // Re-bind the previous spec so the user is never left hotkey-less.
+            let prev = settings::load(&app)
+                .panel_hotkey
+                .filter(|h| !h.trim().is_empty())
+                .unwrap_or_else(|| settings::DEFAULT_PANEL_HOTKEY.to_string());
+            if let Ok(s) = prev.parse::<Shortcut>() {
+                let _ = gs.register(s);
+            }
+            Err(format!("Couldn't bind {trimmed} — {e}"))
+        }
+    }
+}
 
 fn unix_now() -> i64 {
     SystemTime::now()

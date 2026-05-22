@@ -1,4 +1,7 @@
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
+use tauri::{
+    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder,
+};
 
 use crate::settings;
 
@@ -48,6 +51,44 @@ pub fn show_panel(app: &AppHandle) {
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("panel://shown", ());
+}
+
+const SETTINGS_LABEL: &str = "settings";
+
+/// Open the settings window — or focus it if already open. Built lazily
+/// off the shared index.html, like the diff window; main.tsx routes the
+/// "settings" label to the Settings component.
+pub fn open_settings(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(SETTINGS_LABEL) {
+        let _ = win.unminimize();
+        let _ = win.show();
+        let _ = win.set_focus();
+        return;
+    }
+    // The panel is always-on-top; drop that so it can't sit over the
+    // settings window. The next panel summon re-asserts it (toggle_panel).
+    if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
+        if panel.is_visible().unwrap_or(false) {
+            let _ = panel.set_always_on_top(false);
+        }
+    }
+    let built = WebviewWindowBuilder::new(
+        app,
+        SETTINGS_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("gitwink settings")
+    .inner_size(440.0, 560.0)
+    .min_inner_size(360.0, 420.0)
+    .resizable(true)
+    .decorations(true)
+    .skip_taskbar(false)
+    .always_on_top(false)
+    .visible(true)
+    .build();
+    if let Err(e) = built {
+        eprintln!("gitwink: failed to open settings window: {e:#}");
+    }
 }
 
 fn position_panel(window: &WebviewWindow) {

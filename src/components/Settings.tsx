@@ -1,3 +1,7 @@
 export function Settings() {
-  return null;
+  return (
+    <div className="settings">
+      <h1 className="settings-title">Settings</h1>
+    </div>
+  );
 }

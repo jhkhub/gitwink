@@ -34,7 +34,7 @@ pub struct Settings {
     pub diff_window: Option<DiffWindowState>,
     /// Global hotkey spec (Tauri shortcut syntax, e.g. `"CmdOrCtrl+Shift+G"`,
     /// `"Alt+Space"`, `"Ctrl+Alt+Backquote"`). None or invalid value falls
-    /// back to DEFAULT_PANEL_HOTKEY. Takes effect on next app start.
+    /// back to DEFAULT_PANEL_HOTKEY. Re-registered live by `set_panel_hotkey`.
     #[serde(default)]
     pub panel_hotkey: Option<String>,
     /// Per-repo branch selection. Key = repo canonical path, value =
@@ -56,6 +56,14 @@ pub struct Settings {
     /// the user picked "Later". Absent or in the past = show normally.
     #[serde(default)]
     pub update_snooze_until: Option<i64>,
+    /// UI scale multiplier (1.0 = default) — scales the diff + timeline
+    /// font size and row height together. `None` is treated as 1.0.
+    #[serde(default)]
+    pub ui_scale: Option<f32>,
+    /// Diff/code-view font family. `None` falls back to the built-in
+    /// monospace stack; any installed font name is accepted.
+    #[serde(default)]
+    pub diff_font_family: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -183,5 +191,33 @@ pub fn save_update_snooze_until(app: &AppHandle, until: Option<i64>) {
     s.update_snooze_until = until;
     if let Err(e) = save(app, &s) {
         eprintln!("settings: failed to persist update_snooze_until: {e:#}");
+    }
+}
+
+/// Persist the UI scale multiplier (or `None` to reset to default).
+pub fn save_ui_scale(app: &AppHandle, scale: Option<f32>) {
+    let mut s = load(app);
+    s.ui_scale = scale;
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist ui_scale: {e:#}");
+    }
+}
+
+/// Persist the diff font family (or `None` for the built-in stack).
+pub fn save_diff_font_family(app: &AppHandle, family: Option<String>) {
+    let mut s = load(app);
+    s.diff_font_family = family;
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist diff_font_family: {e:#}");
+    }
+}
+
+/// Persist the panel hotkey spec. Registration is the caller's job —
+/// see `set_panel_hotkey` in commands.rs.
+pub fn save_panel_hotkey(app: &AppHandle, spec: Option<String>) {
+    let mut s = load(app);
+    s.panel_hotkey = spec;
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist panel_hotkey: {e:#}");
     }
 }

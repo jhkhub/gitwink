@@ -62,6 +62,7 @@ fn build_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Me
         true,
         None::<&str>,
     )?;
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let open_settings = MenuItem::with_id(
         app,
         "open_settings",
@@ -76,7 +77,7 @@ fn build_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Me
     // no in-app updater UI. Scoop and direct installs keep the
     // "Check for updates" item.
     if update::installed_via_msix() {
-        return Menu::with_items(app, &[&reset, &open_settings, &sep, &quit]);
+        return Menu::with_items(app, &[&settings, &reset, &open_settings, &sep, &quit]);
     }
 
     let check =
@@ -97,6 +98,7 @@ fn build_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Me
                     &update_item,
                     &sep_top,
                     &check,
+                    &settings,
                     &reset,
                     &open_settings,
                     &sep,
@@ -104,7 +106,9 @@ fn build_menu(app: &AppHandle, update_version: Option<&str>) -> tauri::Result<Me
                 ],
             )
         }
-        None => Menu::with_items(app, &[&check, &reset, &open_settings, &sep, &quit]),
+        None => {
+            Menu::with_items(app, &[&check, &settings, &reset, &open_settings, &sep, &quit])
+        }
     }
 }
 
@@ -112,6 +116,7 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "quit" => app.exit(0),
         "reset_position" => settings::clear_panel_position(app),
+        "settings" => window::open_settings(app),
         "open_settings" => open_settings_file(app),
         "check_updates" => update::manual_check(app),
         "update_available" => update::open_modal(app),
