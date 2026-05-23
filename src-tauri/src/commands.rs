@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::{cache, discovery, discovery_orchestrator, git, settings, update, watcher};
+use crate::{cache, discovery, discovery_orchestrator, git, settings, update, watcher, window};
 
 const MAX_COMMITS_PER_REPO: usize = 10;
 const MAX_COMMITS_PER_REPO_NO_WINDOW: usize = 1_000;
@@ -737,12 +737,13 @@ pub fn set_branch_selection(app: AppHandle, repo_path: String, selection: Vec<St
 /// UI-scale bounds. The floor is 100% — the diff/timeline default is
 /// already the most compact legible size, so going smaller would hurt
 /// readability, which is the whole point of the control.
-const UI_SCALE_MIN: f32 = 1.0;
-const UI_SCALE_MAX: f32 = 1.6;
+pub const UI_SCALE_MIN: f32 = 1.0;
+pub const UI_SCALE_MAX: f32 = 1.6;
 
 /// The user-facing slice of settings the Settings window reads + writes.
 /// camelCase so it maps straight onto the TypeScript `AppSettings`.
-#[derive(Serialize)]
+/// `Clone` so it can be emitted as a Tauri event payload.
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppSettings {
     /// UI scale multiplier; 1.0 = default.
@@ -753,9 +754,11 @@ pub struct AppSettings {
     pub panel_hotkey: String,
 }
 
-#[tauri::command]
-pub fn get_settings(app: AppHandle) -> AppSettings {
-    let s = settings::load(&app);
+/// The current settings snapshot in the AppSettings shape — used by
+/// get_settings and by every set_* command (so the post-change broadcast
+/// always carries the full, freshly-clamped state).
+fn current_app_settings(app: &AppHandle) -> AppSettings {
+    let s = settings::load(app);
     AppSettings {
         ui_scale: s.ui_scale.unwrap_or(1.0).clamp(UI_SCALE_MIN, UI_SCALE_MAX),
         diff_font_family: s.diff_font_family,
@@ -766,22 +769,33 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
     }
 }
 
-/// Persist the UI scale, clamped to [UI_SCALE_MIN, UI_SCALE_MAX]. The
-/// slider enforces the same bounds; this is the backstop against a
-/// hand-edited settings.json.
 #[tauri::command]
-pub fn set_ui_scale(app: AppHandle, scale: f32) {
-    settings::save_ui_scale(&app, Some(scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)));
+pub fn get_settings(app: AppHandle) -> AppSettings {
+    current_app_settings(&app)
 }
 
-/// Persist the diff font family. An empty/whitespace value clears it,
-/// falling back to the built-in monospace stack.
+/// Persist the UI scale, resize the panel window proportionally, and
+/// broadcast settings://changed so every window applies the new CSS
+/// vars in lockstep. Clamped to [UI_SCALE_MIN, UI_SCALE_MAX] — the
+/// slider enforces the same bounds; this is the hand-edit backstop.
+#[tauri::command]
+pub fn set_ui_scale(app: AppHandle, scale: f32) {
+    let clamped = scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+    settings::save_ui_scale(&app, Some(clamped));
+    window::resize_panel_for_scale(&app, clamped);
+    let _ = app.emit("settings://changed", current_app_settings(&app));
+}
+
+/// Persist the diff font family and broadcast settings://changed. An
+/// empty/whitespace value clears it, falling back to the built-in
+/// monospace stack.
 #[tauri::command]
 pub fn set_diff_font(app: AppHandle, family: Option<String>) {
     let cleaned = family
         .map(|f| f.trim().to_string())
         .filter(|f| !f.is_empty());
     settings::save_diff_font_family(&app, cleaned);
+    let _ = app.emit("settings://changed", current_app_settings(&app));
 }
 
 /// Re-bind the global panel hotkey live — no restart. Validates the spec,
@@ -804,6 +818,7 @@ pub fn set_panel_hotkey(app: AppHandle, spec: String) -> Result<(), String> {
     match gs.register(new_shortcut) {
         Ok(()) => {
             settings::save_panel_hotkey(&app, Some(trimmed.to_string()));
+            let _ = app.emit("settings://changed", current_app_settings(&app));
             Ok(())
         }
         Err(e) => {

@@ -65,6 +65,15 @@ pub fn run() {
 
             tray::setup(app)?;
 
+            // Apply the saved UI scale to the panel window size before
+            // the first show — so a saved scale survives across launches
+            // without a 520×600 flash of the base panel.
+            let saved_scale = settings::load(app.handle())
+                .ui_scale
+                .unwrap_or(1.0)
+                .clamp(commands::UI_SCALE_MIN, commands::UI_SCALE_MAX);
+            window::resize_panel_for_scale(app.handle(), saved_scale);
+
             // Self-update: managed state + background check loop (one
             // check on startup, then every 24h). update::start is a
             // no-op for Scoop and Microsoft Store (MSIX) installs — those
