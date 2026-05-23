@@ -7,6 +7,7 @@ export interface AppSettings {
   uiScale: number;
   diffFontFamily: string | null;
   panelHotkey: string;
+  panelPinned: boolean;
 }
 
 /** Built-in diff/code monospace stack — the fallback when no font is
@@ -18,6 +19,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   uiScale: 1,
   diffFontFamily: null,
   panelHotkey: "CmdOrCtrl+Shift+G",
+  panelPinned: false,
 };
 
 /** Timeline row height in px at scale 1.0 — the value the fixed-row
@@ -101,4 +103,10 @@ function subscribe(fn: () => void): () => void {
 /** React hook — the current UI scale, re-rendering on every live change. */
 export function useUiScale(): number {
   return useSyncExternalStore(subscribe, () => current.uiScale);
+}
+
+/** React hook — whether the panel is in pinned mode, re-rendering on
+ *  every live change so the pin button glyph flips immediately. */
+export function usePanelPinned(): boolean {
+  return useSyncExternalStore(subscribe, () => current.panelPinned);
 }

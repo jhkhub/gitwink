@@ -506,10 +506,12 @@ pub fn take_pending_diff_open(
 pub fn dismiss_panel(app: AppHandle) {
     if let Some(panel) = app.get_webview_window("panel") {
         let _ = panel.hide();
-        // Give the panel its always-on-top back so a later summon isn't
-        // left non-floating if a diff window was open at dismiss time.
-        let _ = panel.set_always_on_top(true);
     }
+    // Restore the default always-on-top for the current mode (glance →
+    // true; pinned → false) so a later summon lands in the right state
+    // regardless of what open_diff / open_settings left behind. assert
+    // no-ops if the panel window is somehow gone.
+    window::assert_panel_always_on_top(&app);
     if let Some(diff) = app.get_webview_window("diff") {
         let _ = diff.hide();
     }
@@ -523,6 +525,18 @@ pub fn dismiss_panel(app: AppHandle) {
 pub struct PanelSticky(pub std::sync::atomic::AtomicBool);
 
 impl Default for PanelSticky {
+    fn default() -> Self {
+        Self(std::sync::atomic::AtomicBool::new(false))
+    }
+}
+
+/// Whether the panel is "pinned" — true disables blur-dismiss, adds a
+/// taskbar entry, drops always-on-top. Source of truth for the runtime
+/// check in lib.rs's blur handler + window::assert_panel_always_on_top;
+/// mirrors settings.panel_pinned across launches.
+pub struct PanelPinned(pub std::sync::atomic::AtomicBool);
+
+impl Default for PanelPinned {
     fn default() -> Self {
         Self(std::sync::atomic::AtomicBool::new(false))
     }
@@ -751,6 +765,9 @@ pub struct AppSettings {
     pub diff_font_family: Option<String>,
     /// Effective global hotkey spec — the resolved default if unset.
     pub panel_hotkey: String,
+    /// When true, the panel is "pinned" — no blur auto-hide, shows in
+    /// the taskbar, not always-on-top. False = tray-glance default.
+    pub panel_pinned: bool,
 }
 
 #[tauri::command]
@@ -763,6 +780,7 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
             .panel_hotkey
             .filter(|h| !h.trim().is_empty())
             .unwrap_or_else(|| settings::DEFAULT_PANEL_HOTKEY.to_string()),
+        panel_pinned: s.panel_pinned.unwrap_or(false),
     }
 }
 
@@ -821,6 +839,19 @@ pub fn set_panel_hotkey(app: AppHandle, spec: String) -> Result<(), String> {
             Err(format!("Couldn't bind {trimmed} — {e}"))
         }
     }
+}
+
+/// Toggle the panel between glance (blur-dismiss, no taskbar, always on
+/// top — the default) and pinned (no auto-hide, taskbar entry, normal
+/// stacking). Persisted so the choice survives across launches. The
+/// caller is responsible for broadcastSettings — see App.tsx.
+#[tauri::command]
+pub fn set_panel_pinned(app: AppHandle, pinned: bool) {
+    settings::save_panel_pinned(&app, pinned);
+    if let Some(state) = app.try_state::<PanelPinned>() {
+        state.0.store(pinned, std::sync::atomic::Ordering::SeqCst);
+    }
+    window::apply_panel_pinned(&app, pinned);
 }
 
 /// Open (or focus) the settings window from the frontend — used by the

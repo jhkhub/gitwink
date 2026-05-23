@@ -3,7 +3,7 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-use crate::settings;
+use crate::{commands, settings};
 
 const PANEL_LABEL: &str = "panel";
 /// Base panel size at scale 1.0 — mirrors tauri.conf.json. The UI scale
@@ -21,10 +21,12 @@ pub fn toggle_panel(app: &AppHandle) {
         let _ = window.hide();
     } else {
         position_panel(&window);
-        // Re-assert always-on-top on every summon: open_diff drops it so
+        // Re-assert always-on-top on every summon (open_diff drops it so
         // the diff window isn't trapped behind the panel, and it can
-        // still be false from an earlier diff session.
-        let _ = window.set_always_on_top(true);
+        // still be false from an earlier diff session). assert_* reads
+        // the pinned state so glance summons re-float and pinned summons
+        // stay un-topmost.
+        assert_panel_always_on_top(app);
         let _ = window.show();
         let _ = window.set_focus();
         // The webview is only un-hidden on show, never re-created, so the
@@ -51,7 +53,7 @@ pub fn show_panel(app: &AppHandle) {
     if !window.is_visible().unwrap_or(false) {
         position_panel(&window);
     }
-    let _ = window.set_always_on_top(true);
+    assert_panel_always_on_top(app);
     let _ = window.show();
     let _ = window.set_focus();
     let _ = window.emit("panel://shown", ());
@@ -138,6 +140,32 @@ pub fn resize_panel_for_scale(app: &AppHandle, scale: f32) {
     let final_w = want_w.min(max_w).max(PANEL_BASE_W);
     let final_h = want_h.min(max_h).max(PANEL_BASE_H);
     let _ = panel.set_size(LogicalSize::new(final_w, final_h));
+}
+
+/// Read the runtime PanelPinned state and set the panel's always-on-top
+/// flag accordingly: glance mode → true (floats above all), pinned mode
+/// → false (normal stacking). Call wherever a code path previously did
+/// `panel.set_always_on_top(true)` to "restore the panel default".
+pub fn assert_panel_always_on_top(app: &AppHandle) {
+    let pinned = app
+        .try_state::<commands::PanelPinned>()
+        .map(|s| s.0.load(std::sync::atomic::Ordering::SeqCst))
+        .unwrap_or(false);
+    if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
+        let _ = panel.set_always_on_top(!pinned);
+    }
+}
+
+/// Apply the panel's pin/glance flags: skip_taskbar + always_on_top.
+/// Called by set_panel_pinned on toggle, and by lib.rs setup on startup
+/// so a saved pinned state takes effect before the first show.
+pub fn apply_panel_pinned(app: &AppHandle, pinned: bool) {
+    if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
+        // skip_taskbar=true hides the panel from the taskbar (glance).
+        // pinned=true → false → panel appears in the taskbar.
+        let _ = panel.set_skip_taskbar(!pinned);
+        let _ = panel.set_always_on_top(!pinned);
+    }
 }
 
 fn position_panel(window: &WebviewWindow) {

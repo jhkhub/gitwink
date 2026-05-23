@@ -46,6 +46,7 @@ pub fn run() {
 
             app.manage(commands::PendingDiff::default());
             app.manage(commands::PanelSticky::default());
+            app.manage(commands::PanelPinned::default());
             app.manage(commands::ChangedFilesCache::default());
             app.manage(discovery_orchestrator::ScanState::default());
 
@@ -73,6 +74,19 @@ pub fn run() {
                 .unwrap_or(1.0)
                 .clamp(commands::UI_SCALE_MIN, commands::UI_SCALE_MAX);
             window::resize_panel_for_scale(app.handle(), saved_scale);
+
+            // Apply the saved panel pin state to the runtime atomic + the
+            // panel's skip_taskbar / always_on_top flags before the first
+            // show — so a pinned-at-quit panel comes back pinned.
+            let saved_pinned = settings::load(app.handle())
+                .panel_pinned
+                .unwrap_or(false);
+            if let Some(state) = app.try_state::<commands::PanelPinned>() {
+                state
+                    .0
+                    .store(saved_pinned, std::sync::atomic::Ordering::SeqCst);
+            }
+            window::apply_panel_pinned(app.handle(), saved_pinned);
 
             // Self-update: managed state + background check loop (one
             // check on startup, then every 24h). update::start is a
@@ -154,10 +168,9 @@ pub fn run() {
                             let _ = w.hide();
                         }
                         // Diff window gone — restore the panel's
-                        // always-on-top (open_diff dropped it).
-                        if let Some(p) = handle.get_webview_window("panel") {
-                            let _ = p.set_always_on_top(true);
-                        }
+                        // always-on-top for the current mode (glance →
+                        // true; pinned → stays false).
+                        window::assert_panel_always_on_top(&handle);
                     }
                     WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
                         let stamp = if matches!(evt, WindowEvent::Moved(_)) {
@@ -248,6 +261,15 @@ pub fn run() {
                             // Don't dismiss the panel just because the user
                             // clicked into our own diff window — that's still
                             // an in-app interaction.
+                            // Pinned mode: the panel stays put regardless
+                            // of blur — that's the whole point of pinning.
+                            let pinned = handle_clone
+                                .try_state::<commands::PanelPinned>()
+                                .map(|s| s.0.load(Ordering::SeqCst))
+                                .unwrap_or(false);
+                            if pinned {
+                                return;
+                            }
                             let diff_visible = handle_clone
                                 .get_webview_window("diff")
                                 .and_then(|w| w.is_visible().ok())
@@ -333,6 +355,7 @@ pub fn run() {
             commands::set_ui_scale,
             commands::set_diff_font,
             commands::set_panel_hotkey,
+            commands::set_panel_pinned,
             commands::open_settings_window,
         ])
         .run(tauri::generate_context!())

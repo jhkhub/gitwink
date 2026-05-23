@@ -168,6 +168,43 @@ body,
   align-self: center;
 }
 
+.panel-pin {
+  flex-shrink: 0;
+  width: calc(22px * var(--ui-scale, 1));
+  height: calc(22px * var(--ui-scale, 1));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: calc(12px * var(--ui-scale, 1));
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0.4;
+  align-self: center;
+}
+
+.panel-pin:hover {
+  background: rgba(0, 0, 0, 0.08);
+  opacity: 0.7;
+}
+
+.panel-pin.pinned {
+  opacity: 1;
+  color: rgb(80, 130, 240);
+}
+
+@media (prefers-color-scheme: dark) {
+  .panel-pin:hover {
+    background: rgba(255, 255, 255, 0.10);
+  }
+  .panel-pin.pinned {
+    color: rgb(140, 180, 255);
+  }
+}
+
 .panel-close:hover {
   background: rgba(0, 0, 0, 0.08);
   opacity: 1;

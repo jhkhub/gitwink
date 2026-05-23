@@ -64,6 +64,11 @@ pub struct Settings {
     /// monospace stack; any installed font name is accepted.
     #[serde(default)]
     pub diff_font_family: Option<String>,
+    /// "Pin" mode for the panel — when true, the panel does not auto-hide
+    /// on blur, shows in the taskbar, and is not always-on-top. Default
+    /// false (the tray-glance behaviour gitwink is designed around).
+    #[serde(default)]
+    pub panel_pinned: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -219,5 +224,16 @@ pub fn save_panel_hotkey(app: &AppHandle, spec: Option<String>) {
     s.panel_hotkey = spec;
     if let Err(e) = save(app, &s) {
         eprintln!("settings: failed to persist panel_hotkey: {e:#}");
+    }
+}
+
+/// Persist whether the panel is in pinned mode (no auto-hide on blur,
+/// shown in taskbar, not always-on-top). Applying the window flags is
+/// the caller's job — see `set_panel_pinned` in commands.rs.
+pub fn save_panel_pinned(app: &AppHandle, pinned: bool) {
+    let mut s = load(app);
+    s.panel_pinned = Some(pinned);
+    if let Err(e) = save(app, &s) {
+        eprintln!("settings: failed to persist panel_pinned: {e:#}");
     }
 }

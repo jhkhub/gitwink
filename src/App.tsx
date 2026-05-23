@@ -33,6 +33,11 @@ import {
   setPinnedRepos as savePinnedRepos,
   updateGetState,
 } from "./lib/ipc";
+import {
+  broadcastSettings,
+  getCurrentSettings,
+  usePanelPinned,
+} from "./lib/settings";
 import { UpdateModal } from "./components/UpdateModal";
 import type {
   AuthorTally,
@@ -165,6 +170,10 @@ function App() {
     y: number;
     items: MenuItem[];
   } | null>(null);
+
+  // Reactive panel pin state — drives the header pin button glyph + title
+  // and re-renders this component whenever the pin flag flips.
+  const pinned = usePanelPinned();
 
   // Drop/paste add-repo flow: inline feedback only, no modal.
   // `addError` clears itself after 4s so a typo'd path doesn't linger.
@@ -784,6 +793,25 @@ function App() {
         {upToDate && !scanning && (
           <span className="panel-status">✓ Up to date</span>
         )}
+        <button
+          type="button"
+          className={"panel-pin" + (pinned ? " pinned" : "")}
+          onClick={async () => {
+            const next = !pinned;
+            await invoke("set_panel_pinned", { pinned: next });
+            // Mirror to lib/settings + emit to every window so the pin
+            // glyph flips immediately (rather than waiting for the next
+            // get_settings round-trip).
+            broadcastSettings({ ...getCurrentSettings(), panelPinned: next });
+          }}
+          title={
+            pinned
+              ? "Unpin — return to glance mode (auto-hides on blur, no taskbar)"
+              : "Pin — keep open while clicking elsewhere; shows in taskbar"
+          }
+        >
+          📌
+        </button>
         <button
           type="button"
           className="panel-close"
