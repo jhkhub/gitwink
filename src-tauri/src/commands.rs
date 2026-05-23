@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
-use crate::{cache, discovery, discovery_orchestrator, git, settings, update, watcher};
+use crate::{cache, discovery, discovery_orchestrator, git, settings, update, watcher, window};
 
 const MAX_COMMITS_PER_REPO: usize = 10;
 const MAX_COMMITS_PER_REPO_NO_WINDOW: usize = 1_000;
@@ -737,8 +737,8 @@ pub fn set_branch_selection(app: AppHandle, repo_path: String, selection: Vec<St
 /// UI-scale bounds. The floor is 100% — the diff/timeline default is
 /// already the most compact legible size, so going smaller would hurt
 /// readability, which is the whole point of the control.
-const UI_SCALE_MIN: f32 = 1.0;
-const UI_SCALE_MAX: f32 = 1.6;
+pub const UI_SCALE_MIN: f32 = 1.0;
+pub const UI_SCALE_MAX: f32 = 1.6;
 
 /// The user-facing slice of settings the Settings window reads + writes.
 /// camelCase so it maps straight onto the TypeScript `AppSettings`.
@@ -766,12 +766,15 @@ pub fn get_settings(app: AppHandle) -> AppSettings {
     }
 }
 
-/// Persist the UI scale, clamped to [UI_SCALE_MIN, UI_SCALE_MAX]. The
-/// slider enforces the same bounds; this is the backstop against a
-/// hand-edited settings.json.
+/// Persist the UI scale and resize the panel window proportionally.
+/// Clamped to [UI_SCALE_MIN, UI_SCALE_MAX] — the slider enforces the
+/// same bounds; this is the hand-edit backstop. The resize lags slider
+/// drags by Settings.tsx's persist debounce (a knob, easy to remove).
 #[tauri::command]
 pub fn set_ui_scale(app: AppHandle, scale: f32) {
-    settings::save_ui_scale(&app, Some(scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX)));
+    let clamped = scale.clamp(UI_SCALE_MIN, UI_SCALE_MAX);
+    settings::save_ui_scale(&app, Some(clamped));
+    window::resize_panel_for_scale(&app, clamped);
 }
 
 /// Persist the diff font family. An empty/whitespace value clears it,

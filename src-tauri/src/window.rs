@@ -1,11 +1,15 @@
 use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
+    AppHandle, Emitter, LogicalSize, Manager, PhysicalPosition, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
 
 use crate::settings;
 
 const PANEL_LABEL: &str = "panel";
+/// Base panel size at scale 1.0 — mirrors tauri.conf.json. The UI scale
+/// multiplies these for the actual window size.
+const PANEL_BASE_W: f64 = 520.0;
+const PANEL_BASE_H: f64 = 600.0;
 
 pub fn toggle_panel(app: &AppHandle) {
     let Some(window) = app.get_webview_window(PANEL_LABEL) else {
@@ -91,6 +95,31 @@ pub fn open_settings(app: &AppHandle) {
     if let Err(e) = built {
         eprintln!("gitwink: failed to open settings window: {e:#}");
     }
+}
+
+/// Resize the panel window to PANEL_BASE × scale, clamped to the current
+/// monitor minus a small pad so it never opens larger than the screen.
+/// Called by set_ui_scale on every change and by lib.rs setup so a saved
+/// scale's window size is applied before the first show.
+pub fn resize_panel_for_scale(app: &AppHandle, scale: f32) {
+    let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
+        return;
+    };
+    let want_w = PANEL_BASE_W * scale as f64;
+    let want_h = PANEL_BASE_H * scale as f64;
+    let (max_w, max_h) = panel
+        .current_monitor()
+        .ok()
+        .flatten()
+        .map(|m| {
+            let s = m.scale_factor();
+            let size = m.size();
+            (size.width as f64 / s - 80.0, size.height as f64 / s - 80.0)
+        })
+        .unwrap_or((f64::INFINITY, f64::INFINITY));
+    let final_w = want_w.min(max_w).max(PANEL_BASE_W);
+    let final_h = want_h.min(max_h).max(PANEL_BASE_H);
+    let _ = panel.set_size(LogicalSize::new(final_w, final_h));
 }
 
 fn position_panel(window: &WebviewWindow) {
