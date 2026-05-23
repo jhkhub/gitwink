@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { getCurrentSettings } from "../lib/settings";
+import { broadcastSettings, getCurrentSettings } from "../lib/settings";
 
 /** UI-scale slider bounds — mirror UI_SCALE_MIN/MAX in commands.rs. 100%
  *  is the floor: the diff/timeline default is the most compact legible
@@ -9,16 +9,22 @@ import { getCurrentSettings } from "../lib/settings";
 const SCALE_MIN = 1;
 const SCALE_MAX = 1.6;
 const SCALE_STEP = 0.05;
+/** Debounce before persisting — a slider sweep becomes one disk write. */
+const PERSIST_DELAY_MS = 250;
 
 export function Settings() {
   const [settings, setSettings] = useState(getCurrentSettings);
+  const persistTimer = useRef<number | undefined>(undefined);
 
   function setScale(uiScale: number) {
-    setSettings({ ...settings, uiScale });
-    // The Rust command persists, resizes the panel window, and broadcasts
-    // settings://changed to every window — listeners apply the CSS vars,
-    // so this one invoke per slider step drives the full live preview.
-    void invoke("set_ui_scale", { scale: uiScale });
+    const next = { ...settings, uiScale };
+    setSettings(next);
+    // Live preview across every window — no disk write on each tick.
+    broadcastSettings(next);
+    window.clearTimeout(persistTimer.current);
+    persistTimer.current = window.setTimeout(() => {
+      void invoke("set_ui_scale", { scale: uiScale });
+    }, PERSIST_DELAY_MS);
   }
 
   return (
@@ -46,9 +52,7 @@ export function Settings() {
           </span>
         </div>
         <p className="settings-hint">
-          Scales the whole panel (header, chips, timeline, expansion) and
-          resizes the panel window proportionally. 100% is the most
-          compact size.
+          Scales the diff and timeline text. 100% is the most compact size.
         </p>
       </section>
     </div>

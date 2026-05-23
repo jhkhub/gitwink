@@ -31,14 +31,11 @@ import {
   prefetchCommit,
 } from "../lib/ipc";
 import { useTimelineWindow } from "../lib/useTimelineWindow";
+import { timelineRowH, useUiScale } from "../lib/settings";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 
-/** Fixed all-repos row height — mirrors `.timeline-all .timeline-row` in
- * styles.css. The virtualization math depends on this being exact. The
- * panel scales via .panel { zoom }, so this stays in unscaled local px. */
-const ROW_H = 31;
 /** Extra rows rendered above/below the viewport for scroll smoothness. */
 const OVERSCAN = 8;
 /** Collapse a burst of `timeline://invalidated` events into one reload. */
@@ -135,6 +132,11 @@ export function TimelineWindowed({
   // Measured pixel height of the one open inline expansion (0 = none).
   const [expansionH, setExpansionH] = useState(0);
   const expansionObserver = useRef<ResizeObserver | null>(null);
+
+  // All-repos row height tracks the UI-scale setting; the virtual geometry
+  // below recomputes whenever it changes. ROW_H stays an exact integer the
+  // CSS --timeline-row-h mirrors, so the JS + CSS geometry never drift.
+  const ROW_H = timelineRowH(useUiScale());
 
   /** The commit at global index `gi`, or null when it is outside the
    *  loaded window (a placeholder row). */

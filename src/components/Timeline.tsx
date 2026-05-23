@@ -28,16 +28,13 @@ import {
 } from "../lib/commitClipboard";
 import { computeLanes, type LaneEdge } from "../lib/lanes";
 import { openDiff, prefetchCommit } from "../lib/ipc";
+import { timelineRowH, useUiScale } from "../lib/settings";
 import type { BranchInfo, CommitSummary } from "../types";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { LaneGraph } from "./LaneGraph";
 
-/** Fixed single-repo row height — mirrors `.timeline-single .timeline-row`
- * in styles.css. The virtualization math depends on this being exact. The
- * panel scales via .panel { zoom }, so this stays in unscaled local px. */
-const ROW_H = 31;
 /** Extra rows rendered above/below the viewport for scroll smoothness. */
 const OVERSCAN = 8;
 /** Row-index chunk size for the edge bucket index. The visible-edge query
@@ -97,6 +94,11 @@ export function Timeline({ commits, branches }: Props) {
   const hoverTimers = useRef(new Map<string, number>());
 
   const total = commits.length;
+
+  // Single-repo row height tracks the UI-scale setting; the lane +
+  // virtualization geometry below recomputes whenever it changes. ROW_H
+  // stays an exact integer the CSS --timeline-row-h mirrors.
+  const ROW_H = timelineRowH(useUiScale());
 
   // ----- lane layout: precomputed once over the full history -----
   const headBranch = branches?.find((b) => b.isHead)?.name ?? null;
