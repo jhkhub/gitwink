@@ -97,27 +97,18 @@ pub fn open_settings(app: &AppHandle) {
         let _ = panel.set_always_on_top(false);
     }
 
-    // Try to reuse the existing settings window. If any of unminimize /
-    // show / set_focus fails (the OS killed it, prevent_close didn't
-    // take, Tauri's registry holds a stale handle), tear it down and
-    // build fresh rather than leaving the user staring at a blank shell.
-    if let Some(win) = app.get_webview_window(SETTINGS_LABEL) {
-        let unmin = win.unminimize();
-        let show = win.show();
-        let focus = win.set_focus();
-        if unmin.is_ok() && show.is_ok() && focus.is_ok() {
-            eprintln!("gitwink: re-shown existing settings window");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            return;
-        }
-        eprintln!(
-            "gitwink: existing settings window unusable (unmin={unmin:?} show={show:?} focus={focus:?}); rebuilding"
-        );
+    // Always destroy any existing settings window and rebuild. The
+    // reuse path turned out to be a footgun (stale handles surviving
+    // close-on-hide → show/focus appearing to succeed but the WebView2
+    // inside was already dead → blank shell). Settings is rarely opened
+    // so a fresh ~50ms rebuild per open is the right trade.
+    if let Some(existing) = app.get_webview_window(SETTINGS_LABEL) {
+        eprintln!("gitwink: destroying existing settings window before rebuild");
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        let _ = win.destroy();
+        let _ = existing.destroy();
     }
 
-    eprintln!("gitwink: building fresh settings window");
+    eprintln!("gitwink: building settings window");
     let _ = std::io::Write::flush(&mut std::io::stderr());
     let built = WebviewWindowBuilder::new(
         app,
@@ -204,26 +195,21 @@ pub fn assert_panel_always_on_top(app: &AppHandle) {
     }
 }
 
-/// Apply the panel's pin/glance flags: skip_taskbar + always_on_top.
-/// **Startup-only** — set_panel_pinned no longer calls this at runtime
-/// because toggling set_skip_taskbar live on Windows mutates
-/// WS_EX_TOOLWINDOW / WS_EX_APPWINDOW and is a known WebView2
-/// destabiliser (later window builds can come up blank). The taskbar
-/// entry change therefore applies on next launch; the live pin toggle
-/// only flips always_on_top (safe) + the runtime atomic + persistence.
+/// Apply the panel's pin flag — currently only always_on_top, because
+/// any set_skip_taskbar call (startup OR runtime) on this panel was
+/// implicated in a blank-WebView2-on-next-build cascade on Windows. The
+/// taskbar-entry promise of pinned mode is therefore dropped for now:
+/// the panel always honours tauri.conf.json's skipTaskbar=true. Pinned
+/// mode now means "blur-dismiss off + not always-on-top" — the user
+/// still summons via tray / hotkey rather than alt-tab.
 pub fn apply_panel_pinned(app: &AppHandle, pinned: bool) {
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
         eprintln!("gitwink: apply_panel_pinned but panel window missing");
         let _ = std::io::Write::flush(&mut std::io::stderr());
         return;
     };
-    // skip_taskbar=true hides the panel from the taskbar (glance).
-    // pinned=true → false → panel appears in the taskbar.
-    let st = panel.set_skip_taskbar(!pinned);
     let at = panel.set_always_on_top(!pinned);
-    eprintln!(
-        "gitwink: apply_panel_pinned(pinned={pinned}, startup) → skip_taskbar={st:?} always_on_top={at:?}"
-    );
+    eprintln!("gitwink: apply_panel_pinned(pinned={pinned}) → always_on_top={at:?}");
     let _ = std::io::Write::flush(&mut std::io::stderr());
 }
 
