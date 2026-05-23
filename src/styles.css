@@ -1633,7 +1633,7 @@ body,
    kept in sync via JS so dragging one column scrolls the other. */
 
 .sbs {
-  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+  font-family: var(--diff-font-family, ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace);
   font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.45;
   height: 100%;
@@ -2117,4 +2117,31 @@ body,
   margin: 8px 0 0;
   font-size: 11px;
   opacity: 0.5;
+}
+
+.settings-hint + .settings-row {
+  margin-top: 14px;
+}
+
+.settings-input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.settings-input:focus {
+  border-color: rgba(80, 130, 240, 0.6);
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-input {
+    border-color: rgba(255, 255, 255, 0.18);
+  }
 }
