@@ -2232,3 +2232,97 @@ body,
     color: rgba(255, 130, 130, 1);
   }
 }
+
+/* Update-check radio group — stacks vertically with a short hint per
+   option so the trade-offs (auto vs manual vs off) are visible inline
+   without a tooltip. */
+.settings-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-radio {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  cursor: pointer;
+  padding: 4px 2px;
+  border-radius: 4px;
+}
+
+.settings-radio:hover {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.settings-radio input {
+  grid-row: 1 / span 2;
+  margin: 0;
+  cursor: pointer;
+}
+
+.settings-radio-label {
+  font-size: 13px;
+}
+
+.settings-radio-hint {
+  grid-column: 2;
+  font-size: 11px;
+  opacity: 0.55;
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-radio:hover {
+    background: rgba(255, 255, 255, 0.04);
+  }
+}
+
+/* Footer with the "Open settings.json" escape hatch — visually
+   de-emphasised so non-power-users aren't drawn to it, but still
+   reachable for the rare hand-edit case (clearing a corrupted
+   branch_selections entry, debugging panel_position, etc.). */
+.settings-footer {
+  margin-top: 28px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-link {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  padding: 0;
+  color: rgba(80, 130, 240, 0.95);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: rgba(80, 130, 240, 0.4);
+}
+
+.settings-link:hover {
+  text-decoration-color: rgba(80, 130, 240, 0.9);
+}
+
+.settings-footer-hint {
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+@media (prefers-color-scheme: dark) {
+  .settings-footer {
+    border-top-color: rgba(255, 255, 255, 0.08);
+  }
+  .settings-link {
+    color: rgba(140, 180, 255, 0.95);
+    text-decoration-color: rgba(140, 180, 255, 0.4);
+  }
+  .settings-link:hover {
+    text-decoration-color: rgba(140, 180, 255, 0.9);
+  }
+}

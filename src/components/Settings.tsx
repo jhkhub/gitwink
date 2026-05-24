@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-import { broadcastSettings, getCurrentSettings } from "../lib/settings";
+import {
+  broadcastSettings,
+  getCurrentSettings,
+  type UpdateCheckMode,
+} from "../lib/settings";
 
 /** UI-scale slider bounds — mirror UI_SCALE_MIN/MAX in commands.rs. 100%
  *  is the floor: the diff/timeline default is the most compact legible
@@ -100,6 +104,25 @@ export function Settings() {
     fontTimer.current = window.setTimeout(() => {
       void invoke("set_diff_font", { family: fam });
     }, PERSIST_DELAY_MS);
+  }
+
+  function setUpdateMode(mode: UpdateCheckMode) {
+    const next = { ...settings, updateCheck: mode };
+    setSettings(next);
+    broadcastSettings(next);
+    // Persist immediately — radio clicks are single events, not a sweep,
+    // so debounce buys nothing and the user expects the tray dot /
+    // "Check for updates" item to react right away.
+    void invoke("set_update_check", { mode });
+  }
+
+  function openSettingsFile() {
+    void invoke("open_settings_file").catch((err) => {
+      // Surface in console for triage; the user already gets OS-level
+      // feedback if the editor fails to launch.
+      // eslint-disable-next-line no-console
+      console.error("[gitwink] open_settings_file failed", err);
+    });
   }
 
   // Recording mode: capture the next valid combo and send it to Rust to
@@ -234,6 +257,60 @@ export function Settings() {
           and won't react.
         </p>
       </section>
+
+      {settings.updaterAvailable && (
+        <section className="settings-section">
+          <h2 className="settings-section-title">Updates</h2>
+          <div className="settings-radio-group" role="radiogroup">
+            {(
+              [
+                {
+                  value: "enabled",
+                  label: "Automatic",
+                  hint: "Check on startup + every 24h. Tray dot when one's ready.",
+                },
+                {
+                  value: "manual",
+                  label: "Manual only",
+                  hint: 'No background checks; use the tray "Check for updates" entry.',
+                },
+                {
+                  value: "disabled",
+                  label: "Off",
+                  hint: 'Updater fully disabled. Tray hides the "Check for updates" entry.',
+                },
+              ] as const
+            ).map((opt) => (
+              <label key={opt.value} className="settings-radio">
+                <input
+                  type="radio"
+                  name="update-check"
+                  value={opt.value}
+                  checked={settings.updateCheck === opt.value}
+                  onChange={() => setUpdateMode(opt.value)}
+                />
+                <span className="settings-radio-label">{opt.label}</span>
+                <span className="settings-radio-hint">{opt.hint}</span>
+              </label>
+            ))}
+          </div>
+        </section>
+      )}
+
+      <footer className="settings-footer">
+        <button
+          type="button"
+          className="settings-link"
+          onClick={openSettingsFile}
+        >
+          Open settings.json
+        </button>
+        <span className="settings-footer-hint">
+          Reveals the raw config in your default editor. Most knobs above
+          are mirrored here — auto-managed fields (window positions, repo
+          state) shouldn't need hand-edits.
+        </span>
+      </footer>
     </div>
   );
 }

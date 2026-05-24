@@ -2,12 +2,23 @@ import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { useSyncExternalStore } from "react";
 
+/** Self-update behaviour. Mirrors Rust `UpdateCheckMode` (serialized
+ *  lowercase) — "enabled" auto-checks every 24h, "manual" only on tray
+ *  click, "disabled" turns the updater off entirely (no tray dot, no
+ *  "Check for updates" item). */
+export type UpdateCheckMode = "enabled" | "manual" | "disabled";
+
 /** The user-facing settings slice — mirrors the Rust `AppSettings`. */
 export interface AppSettings {
   uiScale: number;
   diffFontFamily: string | null;
   panelHotkey: string;
   panelPinned: boolean;
+  updateCheck: UpdateCheckMode;
+  /** False for Scoop / Microsoft Store installs — the Updates section
+   *  of the Settings window hides because those channels manage their
+   *  own updates. */
+  updaterAvailable: boolean;
 }
 
 /** Built-in diff/code monospace stack — the fallback when no font is
@@ -20,6 +31,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffFontFamily: null,
   panelHotkey: "CmdOrCtrl+Shift+G",
   panelPinned: false,
+  updateCheck: "enabled",
+  updaterAvailable: true,
 };
 
 /** Timeline row height in px at scale 1.0 — the value the fixed-row
