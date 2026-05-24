@@ -8,6 +8,7 @@ use tauri::{
 use crate::{commands, settings};
 
 const PANEL_LABEL: &str = "panel";
+const DIFF_LABEL: &str = "diff";
 /// Base panel size at scale 1.0 — mirrors tauri.conf.json. The UI scale
 /// multiplies these for the actual window size.
 const PANEL_BASE_W: f64 = 520.0;
@@ -156,6 +157,133 @@ pub fn open_settings(app: &AppHandle) {
             eprintln!("gitwink: failed to build settings window: {e:#}");
         }
     }
+}
+
+/// Serializes diff window creation so two near-simultaneous file opens
+/// (rapid double-click on a file row, or the panel emitting open_diff
+/// twice through some upstream race) can't both pass the
+/// `get_webview_window("diff") == None` check and race into
+/// WebviewWindowBuilder::build() for the same "diff" label — the same
+/// failure class the settings window hit before
+/// OPEN_SETTINGS_IN_FLIGHT was added.
+static OPEN_DIFF_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Open (or focus) the diff window for `payload`. Mirrors open_settings:
+/// single-flight guard, reuse pattern (existing window → show + focus +
+/// emit), build-only-when-missing. Must be called on the UI thread —
+/// the IPC command wrapper in commands.rs dispatches via
+/// `app.run_on_main_thread` so the actual `build()` runs on the same
+/// thread that owns the Tauri window registry. Returns Err with a
+/// frontend-friendly string if either the in-flight guard rejects the
+/// call or build itself fails.
+pub fn open_or_focus_diff(
+    app: &AppHandle,
+    payload: commands::DiffOpenPayload,
+) -> Result<(), String> {
+    struct ReleaseOnDrop;
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            OPEN_DIFF_IN_FLIGHT.store(false, Ordering::SeqCst);
+        }
+    }
+    if OPEN_DIFF_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        eprintln!("gitwink: open_or_focus_diff already in flight, ignoring duplicate call");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        return Err("diff window open already in flight".into());
+    }
+    let _guard = ReleaseOnDrop;
+
+    if let Some(diff) = app.get_webview_window(DIFF_LABEL) {
+        eprintln!("open_or_focus_diff: existing window, show + focus + emit");
+        diff.unminimize().ok();
+        diff.show().map_err(|e| {
+            eprintln!("open_or_focus_diff: show failed: {e}");
+            e.to_string()
+        })?;
+        diff.set_focus().map_err(|e| {
+            eprintln!("open_or_focus_diff: focus failed: {e}");
+            e.to_string()
+        })?;
+        app.emit_to(DIFF_LABEL, "diff://open", payload)
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    eprintln!("open_or_focus_diff: building new diff window");
+    let saved = settings::load(app).diff_window;
+    // Always open at the modest default size. A remembered window size
+    // restored across DPI scale factors was bloating the window (saved
+    // in physical px, re-applied as logical); the user resizes from here.
+    // Position + maximized state are still restored below.
+    let (init_w, init_h) = default_diff_size(app);
+
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        DIFF_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("gitwink diff")
+    .inner_size(init_w, init_h)
+    .resizable(true)
+    .decorations(true)
+    .skip_taskbar(false)
+    .always_on_top(false)
+    .visible(true);
+
+    if let Some(s) = saved {
+        if monitor_can_contain(app, s.x, s.y, s.w, s.h) {
+            builder = builder.position(s.x as f64, s.y as f64);
+        }
+    }
+
+    let window = builder.build().map_err(|e| {
+        eprintln!("open_or_focus_diff: build FAILED: {e:#}");
+        e.to_string()
+    })?;
+
+    if saved.map(|s| s.maximized).unwrap_or(false) {
+        let _ = window.maximize();
+    }
+
+    Ok(())
+}
+
+/// The diff window's default size — a modest fixed size the user
+/// resizes from. Returned in logical pixels. Clamped to fit the primary
+/// monitor so it never opens larger than the screen on a small display.
+fn default_diff_size(app: &AppHandle) -> (f64, f64) {
+    const WANT_W: f64 = 1024.0;
+    const WANT_H: f64 = 720.0;
+    if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let logical_w = monitor.size().width as f64 / scale;
+        let logical_h = monitor.size().height as f64 / scale;
+        let w = WANT_W.min(logical_w - 80.0).max(640.0);
+        let h = WANT_H.min(logical_h - 80.0).max(480.0);
+        return (w, h);
+    }
+    (WANT_W, WANT_H)
+}
+
+/// Sanity-check a saved (x, y, w, h) against the current monitor layout —
+/// when a monitor is unplugged the saved coords can be in no-mans-land and
+/// the window would open invisible.
+fn monitor_can_contain(app: &AppHandle, x: i32, y: i32, w: u32, h: u32) -> bool {
+    let Ok(monitors) = app.available_monitors() else {
+        return false;
+    };
+    const VISIBLE_PAD: i32 = 80;
+    let panel_x2 = x + w as i32;
+    let panel_y2 = y + h as i32;
+    monitors.iter().any(|m| {
+        let mp = m.position();
+        let ms = m.size();
+        let mx2 = mp.x + ms.width as i32;
+        let my2 = mp.y + ms.height as i32;
+        let overlap_x = panel_x2.min(mx2) - x.max(mp.x);
+        let overlap_y = panel_y2.min(my2) - y.max(mp.y);
+        overlap_x >= VISIBLE_PAD && overlap_y >= VISIBLE_PAD
+    })
 }
 
 /// Resize the panel window to PANEL_BASE × scale, clamped to the current

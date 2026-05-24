@@ -560,6 +560,15 @@ pub fn get_scan_state(
     state.0.load(std::sync::atomic::Ordering::SeqCst)
 }
 
+/// Open (or focus) the diff window for one file revision. Thin
+/// dispatcher: stores the payload in PendingDiff so the diff window's
+/// initial mount can pick it up, drops the panel's always-on-top so
+/// the diff isn't trapped behind it, then hands off to
+/// `window::open_or_focus_diff` on the main thread via
+/// `run_on_main_thread` + a oneshot so the IPC future resolves to the
+/// build result instead of swallowing it. Mirrors `open_settings_window`
+/// and addresses GPT Pro review B1 (wrong-thread WebView build + missing
+/// single-flight guard for "diff" label).
 #[tauri::command]
 pub async fn open_diff(
     app: AppHandle,
@@ -593,104 +602,20 @@ pub async fn open_diff(
         let _ = panel.set_always_on_top(false);
     }
 
-    if let Some(diff) = app.get_webview_window("diff") {
-        eprintln!("open_diff: existing window, show + focus + emit");
-        diff.show().map_err(|e| {
-            eprintln!("open_diff: show failed: {e}");
-            e.to_string()
-        })?;
-        diff.set_focus().map_err(|e| {
-            eprintln!("open_diff: focus failed: {e}");
-            e.to_string()
-        })?;
-        diff.unminimize().ok();
-        app.emit_to("diff", "diff://open", payload)
-            .map_err(|e| e.to_string())?;
-        return Ok(());
-    }
-
-    eprintln!("open_diff: building new diff window");
-    let saved = settings::load(&app).diff_window;
-    // Always open at the modest default size. A remembered window size
-    // restored across DPI scale factors was bloating the window (saved in
-    // physical px, re-applied as logical); the user resizes from here.
-    // Position + maximized state are still restored below.
-    let (init_w, init_h) = default_diff_size(&app);
-
-    let mut builder = tauri::WebviewWindowBuilder::new(
-        &app,
-        "diff",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("gitwink diff")
-    .inner_size(init_w, init_h)
-    .resizable(true)
-    .decorations(true)
-    .skip_taskbar(false)
-    .always_on_top(false)
-    .visible(true);
-
-    if let Some(s) = saved {
-        if monitor_can_contain(&app, s.x, s.y, s.w, s.h) {
-            builder = builder.position(s.x as f64, s.y as f64);
-        }
-    }
-
-    let window = match builder.build() {
-        Ok(w) => {
-            eprintln!("open_diff: window built ok");
-            w
-        }
-        Err(e) => {
-            eprintln!("open_diff: window build FAILED: {e:#}");
-            return Err(e.to_string());
-        }
-    };
-
-    if saved.map(|s| s.maximized).unwrap_or(false) {
-        let _ = window.maximize();
-    }
-
-    Ok(())
-}
-
-/// The diff window's default size — a modest fixed size the user resizes
-/// from. Returned in logical pixels (the window builder's `inner_size`
-/// unit). Clamped to fit the primary monitor so it never opens larger than
-/// the screen on a small display.
-fn default_diff_size(app: &AppHandle) -> (f64, f64) {
-    const WANT_W: f64 = 1024.0;
-    const WANT_H: f64 = 720.0;
-    if let Ok(Some(monitor)) = app.primary_monitor() {
-        let scale = monitor.scale_factor();
-        let logical_w = monitor.size().width as f64 / scale;
-        let logical_h = monitor.size().height as f64 / scale;
-        let w = WANT_W.min(logical_w - 80.0).max(640.0);
-        let h = WANT_H.min(logical_h - 80.0).max(480.0);
-        return (w, h);
-    }
-    (WANT_W, WANT_H)
-}
-
-/// Sanity-check a saved (x, y, w, h) against the current monitor layout —
-/// when a monitor is unplugged the saved coords can be in no-mans-land and
-/// the window would open invisible.
-fn monitor_can_contain(app: &AppHandle, x: i32, y: i32, w: u32, h: u32) -> bool {
-    let Ok(monitors) = app.available_monitors() else {
-        return false;
-    };
-    const VISIBLE_PAD: i32 = 80;
-    let panel_x2 = x + w as i32;
-    let panel_y2 = y + h as i32;
-    monitors.iter().any(|m| {
-        let mp = m.position();
-        let ms = m.size();
-        let mx2 = mp.x + ms.width as i32;
-        let my2 = mp.y + ms.height as i32;
-        let overlap_x = panel_x2.min(mx2) - x.max(mp.x);
-        let overlap_y = panel_y2.min(my2) - y.max(mp.y);
-        overlap_x >= VISIBLE_PAD && overlap_y >= VISIBLE_PAD
+    // capacity-1 mpsc as a one-shot — we want the main-thread closure
+    // to send its Result back so this command's future resolves with
+    // the build outcome rather than swallowing it. Tauri's
+    // `async_runtime::channel` is tokio mpsc under the hood; try_send
+    // never blocks because we send exactly once.
+    let (tx, mut rx) = tauri::async_runtime::channel::<Result<(), String>>(1);
+    let app2 = app.clone();
+    app.run_on_main_thread(move || {
+        let _ = tx.try_send(window::open_or_focus_diff(&app2, payload));
     })
+    .map_err(|e| e.to_string())?;
+    rx.recv()
+        .await
+        .ok_or_else(|| "diff dispatch dropped".to_string())?
 }
 
 #[tauri::command]
