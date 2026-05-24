@@ -227,15 +227,15 @@ pub fn save_panel_hotkey(app: &AppHandle, spec: Option<String>) {
     }
 }
 
-/// Persist whether the panel is in pinned mode (no auto-hide on blur,
-/// shown in taskbar, not always-on-top). Applying the window flags is
-/// the caller's job — see `set_panel_pinned` in commands.rs.
-pub fn save_panel_pinned(app: &AppHandle, pinned: bool) {
+/// Persist the panel pin mode. Returns the disk write Result so the
+/// caller can refuse to mutate runtime state on a persistence failure —
+/// otherwise the UI would say "pinned" until restart, then revert.
+/// Runtime state flips (atomic + always_on_top) are the caller's job;
+/// see `set_panel_pinned` in commands.rs.
+pub fn save_panel_pinned(app: &AppHandle, pinned: bool) -> Result<()> {
     let mut s = load(app);
     s.panel_pinned = Some(pinned);
-    if let Err(e) = save(app, &s) {
-        eprintln!("settings: failed to persist panel_pinned: {e:#}");
-    }
+    save(app, &s)
 }
 
 /// Persist the self-update mode (`Enabled` / `Manual` / `Disabled`).

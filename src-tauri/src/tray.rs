@@ -116,7 +116,11 @@ fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     match event.id().as_ref() {
         "quit" => app.exit(0),
         "reset_position" => settings::clear_panel_position(app),
-        "settings" => window::open_settings(app),
+        "settings" => {
+            if let Err(e) = window::open_settings(app) {
+                eprintln!("gitwink: tray Settings handler: {e}");
+            }
+        }
         "check_updates" => update::manual_check(app),
         "update_available" => update::open_modal(app),
         _ => {}

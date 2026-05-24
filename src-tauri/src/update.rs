@@ -91,6 +91,32 @@ pub fn start(app: AppHandle) {
     });
 }
 
+/// Drop any cached "an update is available" snapshot so the indicator
+/// goes dark immediately and a stale version can't re-appear when the
+/// user toggles back to Enabled/Manual. Called when update_check flips
+/// to Disabled (GPT Pro review E3).
+pub fn clear_cached_available(app: &AppHandle) {
+    if let Ok(mut slot) = app.state::<UpdateState>().available.lock() {
+        *slot = None;
+    }
+}
+
+/// Run one update check off the main thread. `manual = false` so the
+/// no-update path stays silent — used to wake the updater after the
+/// user toggles update_check to Enabled without waiting up to 24h for
+/// the background loop's next tick (GPT Pro review E1).
+pub fn check_now_background(app: &AppHandle) {
+    if installed_via_scoop() || installed_via_msix() {
+        return;
+    }
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = run_check(&app, false).await {
+            eprintln!("gitwink: triggered update check failed: {e}");
+        }
+    });
+}
+
 /// Tray "Check for updates" entry point. Surfaces the modal on a hit
 /// regardless of skip/snooze state — the user explicitly asked.
 pub fn manual_check(app: &AppHandle) {

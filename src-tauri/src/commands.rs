@@ -856,10 +856,13 @@ pub fn set_panel_hotkey(app: AppHandle, spec: String) -> Result<(), String> {
 /// stacking). Persisted so the choice survives across launches. The
 /// caller is responsible for broadcastSettings — see App.tsx.
 #[tauri::command]
-pub fn set_panel_pinned(app: AppHandle, pinned: bool) {
+pub fn set_panel_pinned(app: AppHandle, pinned: bool) -> Result<(), String> {
     eprintln!("gitwink: set_panel_pinned({pinned})");
     let _ = std::io::Write::flush(&mut std::io::stderr());
-    settings::save_panel_pinned(&app, pinned);
+    // Persist FIRST. If the write fails (read-only config dir, disk
+    // full), refuse the toggle entirely so the UI and the next launch
+    // agree (GPT Pro review A3 caveat).
+    settings::save_panel_pinned(&app, pinned).map_err(|e| e.to_string())?;
     if let Some(live) = app.try_state::<LiveSettings>() {
         live.with_mut(|s| s.panel_pinned = Some(pinned));
     }
@@ -870,14 +873,14 @@ pub fn set_panel_pinned(app: AppHandle, pinned: bool) {
     // deliberately do NOT touch set_skip_taskbar here — that mutates
     // WS_EX_TOOLWINDOW / WS_EX_APPWINDOW at runtime, which on Windows
     // is a known WebView2 destabiliser (subsequent window builds can
-    // come up blank). The taskbar entry change applies on next launch
-    // via apply_panel_pinned in lib.rs setup. The blur-dismiss behaviour
-    // change is live regardless — it's just an atomic check.
+    // come up blank). The blur-dismiss behaviour change is live
+    // regardless — it's just an atomic check.
     if let Some(panel) = app.get_webview_window("panel") {
         let r = panel.set_always_on_top(!pinned);
         eprintln!("gitwink: set_panel_pinned runtime always_on_top={r:?}");
         let _ = std::io::Write::flush(&mut std::io::stderr());
     }
+    Ok(())
 }
 
 /// Open (or focus) the settings window from the frontend — used by the
@@ -885,13 +888,21 @@ pub fn set_panel_pinned(app: AppHandle, pinned: bool) {
 /// async + run_on_main_thread so window creation is explicitly
 /// dispatched to the UI thread rather than running on whatever worker
 /// the sync command was scheduled on (sync commands building windows
-/// have been observed to hang on Windows / WebView2).
+/// have been observed to hang on Windows / WebView2). Returns the
+/// build Result so a frontend "Settings…" click that silently fails
+/// surfaces in the console instead of looking successful
+/// (GPT Pro review B3).
 #[tauri::command]
-pub async fn open_settings_window(app: AppHandle) {
+pub async fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    let (tx, mut rx) = tauri::async_runtime::channel::<Result<(), String>>(1);
     let app2 = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        window::open_settings(&app2);
-    });
+    app.run_on_main_thread(move || {
+        let _ = tx.try_send(window::open_settings(&app2));
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv()
+        .await
+        .ok_or_else(|| "settings dispatch dropped".to_string())?
 }
 
 /// Persist the self-update mode and refresh the tray dot immediately
@@ -903,7 +914,18 @@ pub fn set_update_check(app: AppHandle, mode: settings::UpdateCheckMode) {
     if let Some(live) = app.try_state::<LiveSettings>() {
         live.with_mut(|s| s.update_check = mode);
     }
+    // E3: clear the cached available-update snapshot when switching
+    // off so a stale version can't re-appear the moment the user
+    // toggles back to Enabled/Manual.
+    if mode == settings::UpdateCheckMode::Disabled {
+        update::clear_cached_available(&app);
+    }
     update::refresh_indicator(&app);
+    // E1: wake the updater so flipping to Enabled doesn't silently
+    // wait up to 24h for the background loop's next tick.
+    if mode == settings::UpdateCheckMode::Enabled {
+        update::check_now_background(&app);
+    }
 }
 
 /// Reveal `settings.json` in the user's default editor (or the OS file

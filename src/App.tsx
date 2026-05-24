@@ -798,11 +798,23 @@ function App() {
           className={"panel-pin" + (pinned ? " pinned" : "")}
           onClick={async () => {
             const next = !pinned;
-            await invoke("set_panel_pinned", { pinned: next });
+            try {
+              // set_panel_pinned now returns a Result — refuse to flip
+              // the pin glyph if the disk persist fails, so the UI and
+              // the next launch agree (GPT Pro review A3 caveat).
+              await invoke("set_panel_pinned", { pinned: next });
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.error("[gitwink] set_panel_pinned failed", err);
+              return;
+            }
             // Mirror to lib/settings + emit to every window so the pin
             // glyph flips immediately (rather than waiting for the next
             // get_settings round-trip).
-            broadcastSettings({ ...getCurrentSettings(), panelPinned: next });
+            void broadcastSettings({
+              ...getCurrentSettings(),
+              panelPinned: next,
+            });
           }}
           title={
             pinned

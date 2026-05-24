@@ -73,9 +73,11 @@ static OPEN_SETTINGS_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Open the settings window — or focus it if already open. Built lazily
 /// off the shared index.html, like the diff window; main.tsx routes the
-/// "settings" label to the Settings component. The panel is summoned
-/// alongside so diff/timeline size + font changes preview live.
-pub fn open_settings(app: &AppHandle) {
+/// "settings" label to the Settings component. Returns `Err` if the
+/// in-flight guard rejected the call (concurrent open) or the build
+/// failed — the calling IPC command propagates this to the frontend
+/// instead of silently looking successful (GPT Pro review B3).
+pub fn open_settings(app: &AppHandle) -> Result<(), String> {
     // RAII release: clearing the flag in Drop guarantees we don't leak
     // a stuck "in flight" if any branch panics or returns early.
     struct ReleaseOnDrop;
@@ -87,7 +89,7 @@ pub fn open_settings(app: &AppHandle) {
     if OPEN_SETTINGS_IN_FLIGHT.swap(true, Ordering::SeqCst) {
         eprintln!("gitwink: open_settings already in flight, ignoring duplicate call");
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        return;
+        return Err("settings open already in flight".into());
     }
     let _guard = ReleaseOnDrop;
     // Reuse the existing settings window if there is one — close-on-hide
@@ -100,9 +102,9 @@ pub fn open_settings(app: &AppHandle) {
         eprintln!("gitwink: re-using existing settings window");
         let _ = std::io::Write::flush(&mut std::io::stderr());
         let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
     }
 
     eprintln!("gitwink: building settings window");
@@ -121,42 +123,39 @@ pub fn open_settings(app: &AppHandle) {
     .always_on_top(false)
     .visible(true)
     .build();
-    eprintln!("gitwink: build() returned: {}", if built.is_ok() { "Ok" } else { "Err" });
+    let win = built.map_err(|e| {
+        eprintln!("gitwink: failed to build settings window: {e:#}");
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        e.to_string()
+    })?;
+    eprintln!("gitwink: settings window built ok, attaching close handler");
     let _ = std::io::Write::flush(&mut std::io::stderr());
-    match built {
-        Ok(win) => {
-            eprintln!("gitwink: settings window built ok, attaching close handler");
-            let _ = std::io::Write::flush(&mut std::io::stderr());
-            // Hide instead of destroy on close — same pattern as the diff
-            // window. Two reasons: re-open is instant (no rebuild / no
-            // re-mount), and the get_webview_window check at the top of
-            // open_settings can never race with a slow first-time build.
-            // On close, restore the panel's always-on-top for the
-            // current mode (glance → true; pinned → false) so the panel
-            // doesn't stay un-topmost after the user dismisses settings.
-            let handle = app.clone();
-            win.on_window_event(move |evt| match evt {
-                WindowEvent::CloseRequested { api, .. } => {
-                    eprintln!("gitwink: settings CloseRequested → prevent + hide");
-                    api.prevent_close();
-                    if let Some(w) = handle.get_webview_window(SETTINGS_LABEL) {
-                        let _ = w.hide();
-                    }
-                    assert_panel_always_on_top(&handle);
-                    // The "settings is visible" veto in the blur handler
-                    // was holding the panel up while the user worked in
-                    // Settings; now that it's hiding, re-evaluate so a
-                    // glance panel actually dismisses if focus moved
-                    // somewhere outside the app.
-                    maybe_hide_panel_for_blur(&handle);
-                }
-                _ => {}
-            });
+    // Hide instead of destroy on close — same pattern as the diff
+    // window. Two reasons: re-open is instant (no rebuild / no
+    // re-mount), and the get_webview_window check at the top of
+    // open_settings can never race with a slow first-time build.
+    // On close, restore the panel's always-on-top for the
+    // current mode (glance → true; pinned → false) so the panel
+    // doesn't stay un-topmost after the user dismisses settings.
+    let handle = app.clone();
+    win.on_window_event(move |evt| match evt {
+        WindowEvent::CloseRequested { api, .. } => {
+            eprintln!("gitwink: settings CloseRequested → prevent + hide");
+            api.prevent_close();
+            if let Some(w) = handle.get_webview_window(SETTINGS_LABEL) {
+                let _ = w.hide();
+            }
+            assert_panel_always_on_top(&handle);
+            // The "settings is visible" veto in the blur handler
+            // was holding the panel up while the user worked in
+            // Settings; now that it's hiding, re-evaluate so a
+            // glance panel actually dismisses if focus moved
+            // somewhere outside the app.
+            maybe_hide_panel_for_blur(&handle);
         }
-        Err(e) => {
-            eprintln!("gitwink: failed to build settings window: {e:#}");
-        }
-    }
+        _ => {}
+    });
+    Ok(())
 }
 
 /// Serializes diff window creation so two near-simultaneous file opens
@@ -286,10 +285,23 @@ fn monitor_can_contain(app: &AppHandle, x: i32, y: i32, w: u32, h: u32) -> bool 
     })
 }
 
+/// Minimum panel size the window can fall to on tiny / portrait
+/// monitors where even PANEL_BASE doesn't fit. The chip dropdowns
+/// degrade gracefully under this; the panel header is still reachable
+/// because we keep above zero.
+const PANEL_MIN_W: f64 = 360.0;
+const PANEL_MIN_H: f64 = 420.0;
+
 /// Resize the panel window to PANEL_BASE × scale, clamped to the current
 /// monitor minus a small pad so it never opens larger than the screen.
 /// Called by set_ui_scale on every change and by lib.rs setup so a saved
 /// scale's window size is applied before the first show.
+///
+/// On small / portrait / remote displays where even the BASE size won't
+/// fit, we let the panel shrink to PANEL_MIN_* rather than clamping
+/// back up to BASE (the old code did `.max(PANEL_BASE_*)` which
+/// silently undid the monitor clamp and could clip the header off-screen
+/// — GPT Pro review C1).
 pub fn resize_panel_for_scale(app: &AppHandle, scale: f32) {
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
         return;
@@ -306,8 +318,12 @@ pub fn resize_panel_for_scale(app: &AppHandle, scale: f32) {
             (size.width as f64 / s - 80.0, size.height as f64 / s - 80.0)
         })
         .unwrap_or((f64::INFINITY, f64::INFINITY));
-    let final_w = want_w.min(max_w).max(PANEL_BASE_W);
-    let final_h = want_h.min(max_h).max(PANEL_BASE_H);
+    // Floor against PANEL_MIN_* — but never above the monitor max, so
+    // a 320px-wide remote display still gets a window that fits.
+    let min_w = PANEL_MIN_W.min(max_w.max(1.0));
+    let min_h = PANEL_MIN_H.min(max_h.max(1.0));
+    let final_w = want_w.min(max_w).max(min_w);
+    let final_h = want_h.min(max_h).max(min_h);
     let _ = panel.set_size(LogicalSize::new(final_w, final_h));
 }
 
