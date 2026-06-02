@@ -498,19 +498,30 @@ pub fn file_diff(
     let mut out = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
         if out.len() >= MAX_DIFF_BYTES {
-            return false; // stop emitting; keep what we have
+            return false; // already at the cap
         }
-        match line.origin() {
-            'F' | 'H' => {
-                // file or hunk header — content already includes its prefix
-                out.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-            }
-            origin => {
-                out.push(origin);
-                out.push_str(std::str::from_utf8(line.content()).unwrap_or(""));
-            }
+        let origin = line.origin();
+        let is_header = matches!(origin, 'F' | 'H');
+        // Non-header lines carry their +/-/space prefix as the origin char.
+        if !is_header {
+            out.push(origin);
         }
-        true
+        let content = std::str::from_utf8(line.content()).unwrap_or("");
+        let budget = MAX_DIFF_BYTES.saturating_sub(out.len());
+        if content.len() <= budget {
+            out.push_str(content);
+            true
+        } else {
+            // A single oversized line (minified/generated file): push a
+            // UTF-8-safe prefix that fits the budget and stop, so one line
+            // can't blow far past the cap.
+            let mut end = budget;
+            while end > 0 && !content.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.push_str(&content[..end]);
+            false
+        }
     })
     .ok();
 

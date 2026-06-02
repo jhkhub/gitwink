@@ -121,6 +121,12 @@ export function TimelineWindowed({
   // reads the live expanded state without re-subscribing on every toggle.
   const expandedKeyRef = useRef<string | null>(null);
   expandedKeyRef.current = expandedKey;
+  // Anchors for the follow-expanded effect: track the open commit's key, its
+  // last global index, and the last recovery nonce so a list shift can be told
+  // apart from a click / a filter-change recovery.
+  const prevExpandedKeyRef = useRef<string | null>(null);
+  const prevExpandedGiRef = useRef(-1);
+  const prevRecoveryNonceRef = useRef(0);
   // "N new commits" pill — set when the scanner reports new commits while
   // the reader is scrolled away from the top.
   const [newCount, setNewCount] = useState(0);
@@ -223,16 +229,43 @@ export function TimelineWindowed({
     if (selected > count - 1) setSelected(Math.max(0, count - 1));
   }, [count, selected]);
 
-  // Follow the open commit across a quiet window refresh: new commits
-  // inserted above shift its global index, so re-point the selection at it
-  // by identity instead of leaving it on the old numeric index.
-  useEffect(() => {
-    if (expandedKey == null) return;
+  // Follow the open commit across a quiet window refresh. New commits inserted
+  // above shift its global index; keep selection AND the viewport offset on
+  // it. Apply the scroll delta ONLY when the SAME commit stays open and its
+  // index moved — a click (expandedKey change) or a filter-change recovery
+  // (which deliberately re-anchors) just re-seeds. Layout effect so scroll
+  // lands before paint.
+  useLayoutEffect(() => {
+    const recovered = prevRecoveryNonceRef.current !== recovery.nonce;
+    const expandedChanged = prevExpandedKeyRef.current !== expandedKey;
+    prevRecoveryNonceRef.current = recovery.nonce;
+    prevExpandedKeyRef.current = expandedKey;
+
+    if (expandedKey == null) {
+      prevExpandedGiRef.current = -1;
+      return;
+    }
     const li = rows.findIndex((r) => rowKey(r) === expandedKey);
-    if (li < 0) return;
+    if (li < 0) {
+      prevExpandedGiRef.current = -1;
+      return;
+    }
     const gi = baseIndex + li;
-    setSelected((prev) => (prev === gi ? prev : gi));
-  }, [rows, baseIndex, expandedKey]);
+    const prevGi = prevExpandedGiRef.current;
+    prevExpandedGiRef.current = gi;
+
+    if (recovered || expandedChanged || prevGi < 0) return;
+    if (gi === prevGi) {
+      setSelected((prev) => (prev === gi ? prev : gi));
+      return;
+    }
+    setSelected(gi);
+    const el = scrollRef.current;
+    if (el) {
+      el.scrollTop += (gi - prevGi) * ROW_H;
+      setScrollTop(el.scrollTop);
+    }
+  }, [rows, baseIndex, expandedKey, recovery.nonce, ROW_H]);
 
   const copyAiContext = useCallback(async (commit: CommitSummary) => {
     const result = await copyCommitAiContext(commit);

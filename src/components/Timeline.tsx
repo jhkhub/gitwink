@@ -102,6 +102,7 @@ export function Timeline({ commits, branches, resetKey }: Props) {
   // shifts indices can follow it (and adjust scroll) instead of leaving the
   // selection on whatever now sits at the old index.
   const prevExpandedIdxRef = useRef(-1);
+  const prevExpandedHashRef = useRef<string | null>(null);
   const prevResetKeyRef = useRef(resetKey);
 
   const total = commits.length;
@@ -229,18 +230,23 @@ export function Timeline({ commits, branches, resetKey }: Props) {
   }, [total, selected]);
 
   // Follow the open commit across a same-filter re-pull (refreshNonce can
-  // prepend new commits, shifting indices). Keeps selection + scroll on the
-  // commit the user opened. A filter change (resetKey) resets instead, so
-  // skip it here.
-  useEffect(() => {
+  // prepend new commits, shifting indices) — keep selection + scroll on it.
+  // Apply the scroll delta ONLY when the SAME commit stays open and its index
+  // moved. A filter reset or opening a DIFFERENT commit (a normal click) just
+  // re-seeds the anchor — otherwise a click would scroll-jump. Layout effect
+  // so the scroll correction lands before paint.
+  useLayoutEffect(() => {
     const resetChanged = prevResetKeyRef.current !== resetKey;
+    const expandedChanged = prevExpandedHashRef.current !== expandedHash;
     prevResetKeyRef.current = resetKey;
+    prevExpandedHashRef.current = expandedHash;
     const curIdx =
       expandedHash != null
         ? commits.findIndex((c) => c.hash === expandedHash)
         : -1;
     if (
       !resetChanged &&
+      !expandedChanged &&
       expandedHash != null &&
       prevExpandedIdxRef.current >= 0 &&
       curIdx >= 0

@@ -89,14 +89,18 @@ export function DiffApp() {
         }
       } catch {}
 
-      const u = await listen<DiffOpenPayload>("diff://open", (e) => {
-        setCtx(e.payload);
-        setSelectedFile(e.payload.filePath);
-      });
-      // Unmounted before listen resolved → unsubscribe immediately so the
-      // handler can't fire on a dead component.
-      if (cancelled) u();
-      else un = u;
+      try {
+        const u = await listen<DiffOpenPayload>("diff://open", (e) => {
+          setCtx(e.payload);
+          setSelectedFile(e.payload.filePath);
+        });
+        // Unmounted before listen resolved → unsubscribe immediately so the
+        // handler can't fire on a dead component.
+        if (cancelled) u();
+        else un = u;
+      } catch {
+        /* listener registration failed — nothing to unsubscribe */
+      }
     })();
 
     function onKey(e: KeyboardEvent) {
@@ -153,17 +157,19 @@ export function DiffApp() {
     (selectedFileMeta.oldSize ?? 0) + (selectedFileMeta.newSize ?? 0) >
       FULL_MAX_BYTES;
 
-  // Reset to the default context when a different commit is opened — a "Full"
-  // choice on one small file shouldn't silently apply to the next commit.
+  // What we actually fetch/show. A carried-over "Full" is clamped to expanded
+  // on a large file WITHOUT losing the user's choice (it returns when they
+  // view a smaller file). Deriving it — rather than setContext(25) in an
+  // effect — avoids the one-frame Full request the demotion used to let slip.
+  const effectiveContext =
+    context === WHOLE_FILE_CONTEXT && isFullTooBig ? 25 : context;
+
+  // Reset to the default context when a different commit is opened. Keyed on
+  // repoPath+hash because all-repos identity is repoPath:hash (two repos can
+  // share a commit hash).
   useEffect(() => {
     setContext(3);
-  }, [ctx?.hash]);
-
-  // Demote a carried-over "Full" to ±25 once we learn the selected file is
-  // large, so it can't flood the view on a big file within the same commit.
-  useEffect(() => {
-    if (context === WHOLE_FILE_CONTEXT && isFullTooBig) setContext(25);
-  }, [context, isFullTooBig]);
+  }, [ctx?.repoPath, ctx?.hash]);
 
   // Only fetch text diff if it's worth rendering.
   useEffect(() => {
@@ -179,11 +185,23 @@ export function DiffApp() {
       setDiffText("");
       return;
     }
+    // Metadata loaded for this commit but the selected path isn't in it
+    // (changedFiles failed or omitted it) — don't fire a text diff (least of
+    // all a Full one) for a file we can't size-check.
+    if (!selectedFileMeta) {
+      setDiffText("");
+      return;
+    }
     let cancelled = false;
     setDiffText(null);
     (async () => {
       try {
-        const txt = await fileDiff(ctx.repoPath, ctx.hash, selectedFile, context);
+        const txt = await fileDiff(
+          ctx.repoPath,
+          ctx.hash,
+          selectedFile,
+          effectiveContext,
+        );
         if (!cancelled) setDiffText(txt);
       } catch (e) {
         if (!cancelled) setDiffText(`Error: ${String(e)}`);
@@ -192,7 +210,16 @@ export function DiffApp() {
     return () => {
       cancelled = true;
     };
-  }, [ctx?.repoPath, ctx?.hash, selectedFile, isImage, isBinary, context, filesCtx]);
+  }, [
+    ctx?.repoPath,
+    ctx?.hash,
+    selectedFile,
+    isImage,
+    isBinary,
+    effectiveContext,
+    filesCtx,
+    selectedFileMeta,
+  ]);
 
   function onShellContextMenu(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
@@ -277,7 +304,8 @@ export function DiffApp() {
                   key={o.value}
                   type="button"
                   className={
-                    "diff-context-btn" + (context === o.value ? " active" : "")
+                    "diff-context-btn" +
+                    (effectiveContext === o.value ? " active" : "")
                   }
                   disabled={disabled}
                   onClick={() => setContext(o.value)}
