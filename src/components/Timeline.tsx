@@ -98,6 +98,11 @@ export function Timeline({ commits, branches, resetKey }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const expansionObserver = useRef<ResizeObserver | null>(null);
   const hoverTimers = useRef(new Map<string, number>());
+  // Track the open commit's previous index so a same-filter re-pull that
+  // shifts indices can follow it (and adjust scroll) instead of leaving the
+  // selection on whatever now sits at the old index.
+  const prevExpandedIdxRef = useRef(-1);
+  const prevResetKeyRef = useRef(resetKey);
 
   const total = commits.length;
 
@@ -222,6 +227,35 @@ export function Timeline({ commits, branches, resetKey }: Props) {
   useEffect(() => {
     if (selected > total - 1) setSelected(Math.max(0, total - 1));
   }, [total, selected]);
+
+  // Follow the open commit across a same-filter re-pull (refreshNonce can
+  // prepend new commits, shifting indices). Keeps selection + scroll on the
+  // commit the user opened. A filter change (resetKey) resets instead, so
+  // skip it here.
+  useEffect(() => {
+    const resetChanged = prevResetKeyRef.current !== resetKey;
+    prevResetKeyRef.current = resetKey;
+    const curIdx =
+      expandedHash != null
+        ? commits.findIndex((c) => c.hash === expandedHash)
+        : -1;
+    if (
+      !resetChanged &&
+      expandedHash != null &&
+      prevExpandedIdxRef.current >= 0 &&
+      curIdx >= 0
+    ) {
+      const delta = curIdx - prevExpandedIdxRef.current;
+      if (delta !== 0) {
+        setSelected(curIdx);
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop += delta * ROW_H;
+          setScrollTop(scrollRef.current.scrollTop);
+        }
+      }
+    }
+    prevExpandedIdxRef.current = curIdx;
+  }, [commits, resetKey, expandedHash, ROW_H]);
 
   const copyAiContext = useCallback(async (commit: CommitSummary) => {
     const result = await copyCommitAiContext(commit);

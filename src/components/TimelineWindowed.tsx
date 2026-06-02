@@ -223,6 +223,17 @@ export function TimelineWindowed({
     if (selected > count - 1) setSelected(Math.max(0, count - 1));
   }, [count, selected]);
 
+  // Follow the open commit across a quiet window refresh: new commits
+  // inserted above shift its global index, so re-point the selection at it
+  // by identity instead of leaving it on the old numeric index.
+  useEffect(() => {
+    if (expandedKey == null) return;
+    const li = rows.findIndex((r) => rowKey(r) === expandedKey);
+    if (li < 0) return;
+    const gi = baseIndex + li;
+    setSelected((prev) => (prev === gi ? prev : gi));
+  }, [rows, baseIndex, expandedKey]);
+
   const copyAiContext = useCallback(async (commit: CommitSummary) => {
     const result = await copyCommitAiContext(commit);
     setCopyStatus(result);

@@ -56,6 +56,15 @@ function cursorOf(c: CommitSummary): Cursor {
   return { sortTs: -c.timestamp, repoPath: c.repoPath, hash: c.hash };
 }
 
+/** Edge-cursor equality — used to drop an extend page whose edge moved under
+ *  it (a concurrent opposite-direction extend trimmed the window), which
+ *  would otherwise splice in a non-contiguous slice. */
+function sameCursor(a: Cursor | null, b: Cursor | null): boolean {
+  return (
+    a?.sortTs === b?.sortTs && a?.repoPath === b?.repoPath && a?.hash === b?.hash
+  );
+}
+
 export interface TimelineWindowParams {
   /** repo-id filter, or null for all repos */
   repoIds: number[] | null;
@@ -142,6 +151,10 @@ export function useTimelineWindow(
   const loadingOlderRef = useRef(false);
   const jumpTimerRef = useRef<number | null>(null);
   const jumpTargetRef = useRef(0);
+  // Bumped each time the (re)load effect fires; the refill continuation only
+  // runs if its generation is still current, so a stale refresh can't join a
+  // newer filter-change reload and clobber its recovery.
+  const effectSeqRef = useRef(0);
 
   // All the async windowing machinery. Built once — every function reads
   // refs + the stable state setters, never render-scoped values, so a
@@ -217,6 +230,10 @@ export function useTimelineWindow(
         .then((win) => {
           if (qid !== queryRef.current) return;
           const cur = windowRef.current;
+          // The end edge moved under us (a concurrent extendNewer trim or a
+          // jump) — this page no longer abuts the window. Drop it so `rows`
+          // stays one contiguous slice.
+          if (!sameCursor(cur.endCursor, endCursor)) return;
           let rows = [...cur.rows, ...win.rows];
           let baseIndex = cur.baseIndex;
           let startCursor = cur.startCursor;
@@ -255,6 +272,8 @@ export function useTimelineWindow(
         .then((win) => {
           if (qid !== queryRef.current) return;
           const cur = windowRef.current;
+          // The start edge moved under us — drop this page to stay contiguous.
+          if (!sameCursor(cur.startCursor, startCursor)) return;
           let rows = [...win.rows, ...cur.rows];
           const baseIndex = Math.max(0, cur.baseIndex - win.rows.length);
           let endCursor = cur.endCursor;
@@ -322,7 +341,7 @@ export function useTimelineWindow(
       anchorMode: "top" | "recover" | "current",
       soft: boolean,
       emitRecovery: boolean,
-    ) {
+    ): Promise<{ applied: boolean; qid: number }> {
       const p = paramsRef.current;
       const qid = ++queryRef.current;
       loadQidRef.current = qid;
@@ -334,13 +353,13 @@ export function useTimelineWindow(
       // Capture the focus anchor from the OLD window before it is replaced.
       const currentRank = Math.max(0, lastRangeRef.current.first);
       let anchorCursor: Cursor | null = null;
-      let focusedHash: string | null = null;
+      let focusedKey: string | null = null;
       if (anchorMode === "recover") {
         const w = windowRef.current;
         const li = currentRank - w.baseIndex;
         if (li >= 0 && li < w.rows.length) {
           const c = w.rows[li];
-          focusedHash = c.hash;
+          focusedKey = commitKey(c);
           anchorCursor = {
             sortTs: -c.timestamp,
             repoPath: c.repoPath,
@@ -354,7 +373,7 @@ export function useTimelineWindow(
 
       try {
         const generation = await getTimelineGeneration();
-        if (qid !== queryRef.current) return;
+        if (qid !== queryRef.current) return { applied: false, qid };
         const since =
           p.windowDays == null ? null : nowSec() - p.windowDays * 86_400;
         const filter: TimelineFilters = {
@@ -364,7 +383,7 @@ export function useTimelineWindow(
           viewGeneration: generation,
         };
         const cnt = await countCommits(filter);
-        if (qid !== queryRef.current) return;
+        if (qid !== queryRef.current) return { applied: false, qid };
 
         let resRows: CommitSummary[];
         let resBase: number;
@@ -399,7 +418,7 @@ export function useTimelineWindow(
           resStart = win.startCursor;
           resEnd = win.endCursor;
         }
-        if (qid !== queryRef.current) return;
+        if (qid !== queryRef.current) return { applied: false, qid };
 
         windowRef.current = {
           rows: resRows,
@@ -417,8 +436,8 @@ export function useTimelineWindow(
         if (emitRecovery) {
           let idx = 0;
           if (anchorMode === "recover" && anchorCursor) {
-            const li = focusedHash
-              ? resRows.findIndex((r) => r.hash === focusedHash)
+            const li = focusedKey
+              ? resRows.findIndex((r) => commitKey(r) === focusedKey)
               : -1;
             // Anchor survived the filter → land on it; gone → land where it
             // would have been (the newer half is `ANCHOR_BEFORE` rows).
@@ -445,8 +464,10 @@ export function useTimelineWindow(
         } else {
           setFreshHashes(new Set());
         }
+        return { applied: true, qid };
       } catch {
         if (qid === queryRef.current) setStatus("error");
+        return { applied: false, qid };
       } finally {
         if (loadQidRef.current === qid) loadQidRef.current = 0;
       }
@@ -508,6 +529,7 @@ export function useTimelineWindow(
     refreshNonce: number;
   }>({ filtersKey, windowDays, refreshNonce });
   useEffect(() => {
+    const seq = ++effectSeqRef.current;
     const isInitial = windowRef.current.filter == null;
     const prev = reloadKeyRef.current;
     const filtersChanged = !isInitial && filtersKey !== prev.filtersKey;
@@ -526,12 +548,15 @@ export function useTimelineWindow(
         : "current";
     const emitRecovery = isInitial || filtersChanged;
 
-    void machinery.reload(anchorMode, false, emitRecovery).then(() => {
-      if (!needsRefill) return;
-      const qid = queryRef.current;
+    void machinery.reload(anchorMode, false, emitRecovery).then((res) => {
+      // Only chain the git→cache refill off a reload that actually applied
+      // AND is still the current effect generation — otherwise a stale
+      // refresh could join a newer filter-change reload and clobber its
+      // recovery with a rank-based "current" reload.
+      if (!res.applied || seq !== effectSeqRef.current || !needsRefill) return;
       recentCommits(paramsRef.current.windowDays)
         .then(() => {
-          if (qid === queryRef.current) {
+          if (seq === effectSeqRef.current && res.qid === queryRef.current) {
             void machinery.reload("current", false, false);
           }
         })
