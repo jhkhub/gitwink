@@ -5,6 +5,34 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-06-02
+
+### Added
+
+- Diff window — whole-file view. A `±3 / ±25 / Full` context toggle in the
+  diff header expands the view beyond the changed hunks; "Full" shows the
+  entire file with additions/deletions still highlighted, right in the
+  side-by-side view (no separate editor). Cached only at the default size;
+  disabled and server-capped for very large files.
+- Diff window — resizable columns. Drag the divider between the old and new
+  columns to rebalance them when one side's lines are clipped, double-click
+  to reset to 50/50. The split is remembered across diff windows.
+
+### Fixed
+
+- The timeline no longer snaps the open commit, selection, and scroll back
+  to the first row a second or two after you click a row. A background
+  refresh (panel re-summon, a finished scan, a file-watcher event) is now a
+  quiet in-place refresh that keeps your view and follows the commit you
+  opened by identity instead of re-anchoring to the top.
+- Diff resizer is smooth and robust — the diff no longer re-parses on every
+  drag frame, the drag recovers from pointer-cancel / lost-capture, and a
+  zero-width edge case can no longer produce invalid layout.
+- Hardened the windowed all-repos timeline against several races surfaced by
+  a multi-pass review: a stale refresh clobbering a newer filter change,
+  opposite-direction page extends splicing a non-contiguous window, and
+  recovery anchors matching the wrong row when two repos share a commit hash.
+
 ## [0.4.0] — 2026-05-24
 
 ### Added
