@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Highlighter } from "shiki";
 
 import { parseDiff, type DiffSide } from "../lib/diff";
@@ -28,9 +28,16 @@ function loadSplit(): number {
   const v = Number(window.localStorage.getItem(SPLIT_KEY));
   return Number.isFinite(v) && v >= SPLIT_MIN && v <= SPLIT_MAX ? v : 0.5;
 }
+function saveSplit(v: number): void {
+  try {
+    window.localStorage.setItem(SPLIT_KEY, String(v));
+  } catch {}
+}
 
 export function SideBySideDiff({ text, filePath }: Props) {
-  const { hunks } = parseDiff(text);
+  // Memoized: dragging the splitter calls setSplit on every pointer move,
+  // which re-renders — without this, the whole diff would reparse each frame.
+  const { hunks } = useMemo(() => parseDiff(text), [text]);
   const leftRef = useRef<HTMLDivElement | null>(null);
   const rightRef = useRef<HTMLDivElement | null>(null);
   const colsRef = useRef<HTMLDivElement | null>(null);
@@ -39,6 +46,9 @@ export function SideBySideDiff({ text, filePath }: Props) {
   const [highlighter, setHighlighter] = useState<Highlighter | null>(null);
   const [dark, setDark] = useState(isDarkScheme);
   const [split, setSplit] = useState(loadSplit);
+  // Mirror for the pointer handlers (avoids a stale split in the closure).
+  const splitRef = useRef(split);
+  splitRef.current = split;
 
   const lang = filePath ? langForPath(filePath) : null;
 
@@ -91,17 +101,13 @@ export function SideBySideDiff({ text, filePath }: Props) {
     };
   }, [hunks.length]);
 
-  // Persist the split so it survives reopening the diff window.
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(SPLIT_KEY, String(split));
-    } catch {}
-  }, [split]);
-
   // Column resizer — drag the divider to rebalance old vs new, double-click
   // to reset to 50/50. Pointer capture keeps the drag alive past the thin
-  // handle and over the scrolling columns.
+  // handle and over the scrolling columns. We persist only on release (not
+  // every move), and recover the drag flag on cancel / lost-capture so a
+  // gone pointer can't keep resizing on the next hover.
   function onResizerDown(e: React.PointerEvent) {
+    if (e.button !== 0) return;
     e.preventDefault();
     draggingRef.current = true;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -109,15 +115,18 @@ export function SideBySideDiff({ text, filePath }: Props) {
   function onResizerMove(e: React.PointerEvent) {
     if (!draggingRef.current || !colsRef.current) return;
     const rect = colsRef.current.getBoundingClientRect();
+    if (rect.width <= 0) return;
     const r = (e.clientX - rect.left) / rect.width;
+    if (!Number.isFinite(r)) return;
     setSplit(Math.min(SPLIT_MAX, Math.max(SPLIT_MIN, r)));
   }
-  function onResizerUp(e: React.PointerEvent) {
+  function finishDrag(e: React.PointerEvent) {
     if (!draggingRef.current) return;
     draggingRef.current = false;
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
+    saveSplit(splitRef.current);
   }
 
   if (hunks.length === 0) {
@@ -158,8 +167,13 @@ export function SideBySideDiff({ text, filePath }: Props) {
           title="Drag to resize · double-click to reset"
           onPointerDown={onResizerDown}
           onPointerMove={onResizerMove}
-          onPointerUp={onResizerUp}
-          onDoubleClick={() => setSplit(0.5)}
+          onPointerUp={finishDrag}
+          onPointerCancel={finishDrag}
+          onLostPointerCapture={finishDrag}
+          onDoubleClick={() => {
+            setSplit(0.5);
+            saveSplit(0.5);
+          }}
         />
         <div className="sbs-col" ref={rightRef}>
           <div className="sbs-col-inner">

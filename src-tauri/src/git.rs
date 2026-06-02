@@ -490,8 +490,16 @@ pub fn file_diff(
     find_opts.renames(true);
     diff.find_similar(Some(&mut find_opts)).ok();
 
+    // Cap the emitted patch. "Full" context (context_lines ≫ file length) on
+    // a huge generated/lock/minified file would otherwise produce a multi-MB
+    // string that floods the IPC channel + the frontend parser/DOM. The
+    // frontend disables "Full" for large files; this is the backend's own net.
+    const MAX_DIFF_BYTES: usize = 5 * 1024 * 1024;
     let mut out = String::new();
     diff.print(git2::DiffFormat::Patch, |_delta, _hunk, line| {
+        if out.len() >= MAX_DIFF_BYTES {
+            return false; // stop emitting; keep what we have
+        }
         match line.origin() {
             'F' | 'H' => {
                 // file or hunk header — content already includes its prefix

@@ -40,6 +40,11 @@ function formatSize(bytes: number | null): string {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+/** Above this combined (old+new) size, "Full" context is disabled — git
+ *  would otherwise emit a multi-MB patch that floods IPC + the parser + the
+ *  DOM. The backend also caps the emitted patch as a second line of defense. */
+const FULL_MAX_BYTES = 1_500_000;
+
 /** Header context-toggle steps. "Full" expands git's context past any real
  * file length, so the same side-by-side view renders the whole file with
  * changes still tinted — no separate read-only editor. */
@@ -62,6 +67,9 @@ export function DiffApp() {
   // view; the header toggle bumps it to expand context or show the whole
   // file. Persists across file switches so "Full" stays on if chosen.
   const [context, setContext] = useState<number>(3);
+  // Which (repo,hash) the loaded `files` metadata belongs to, so the
+  // text-diff effect never fetches using a previous commit's metadata.
+  const [filesCtx, setFilesCtx] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -81,10 +89,14 @@ export function DiffApp() {
         }
       } catch {}
 
-      un = await listen<DiffOpenPayload>("diff://open", (e) => {
+      const u = await listen<DiffOpenPayload>("diff://open", (e) => {
         setCtx(e.payload);
         setSelectedFile(e.payload.filePath);
       });
+      // Unmounted before listen resolved → unsubscribe immediately so the
+      // handler can't fire on a dead component.
+      if (cancelled) u();
+      else un = u;
     })();
 
     function onKey(e: KeyboardEvent) {
@@ -103,13 +115,24 @@ export function DiffApp() {
 
   useEffect(() => {
     if (!ctx) return;
+    const key = `${ctx.repoPath}:${ctx.hash}`;
     let cancelled = false;
+    // Clear stale metadata up front so selectedFileMeta can't resolve against
+    // the previous commit's files while this loads.
+    setFiles([]);
+    setFilesCtx(null);
     (async () => {
       try {
         const fs = await changedFiles(ctx.repoPath, ctx.hash);
-        if (!cancelled) setFiles(fs);
+        if (!cancelled) {
+          setFiles(fs);
+          setFilesCtx(key);
+        }
       } catch {
-        if (!cancelled) setFiles([]);
+        if (!cancelled) {
+          setFiles([]);
+          setFilesCtx(key);
+        }
       }
     })();
     return () => {
@@ -125,10 +148,33 @@ export function DiffApp() {
   const isImage =
     !!selectedFile && IMAGE_EXT.has(extOf(selectedFile));
   const isBinary = selectedFileMeta?.isBinary === true;
+  const isFullTooBig =
+    !!selectedFileMeta &&
+    (selectedFileMeta.oldSize ?? 0) + (selectedFileMeta.newSize ?? 0) >
+      FULL_MAX_BYTES;
+
+  // Reset to the default context when a different commit is opened — a "Full"
+  // choice on one small file shouldn't silently apply to the next commit.
+  useEffect(() => {
+    setContext(3);
+  }, [ctx?.hash]);
+
+  // Demote a carried-over "Full" to ±25 once we learn the selected file is
+  // large, so it can't flood the view on a big file within the same commit.
+  useEffect(() => {
+    if (context === WHOLE_FILE_CONTEXT && isFullTooBig) setContext(25);
+  }, [context, isFullTooBig]);
 
   // Only fetch text diff if it's worth rendering.
   useEffect(() => {
     if (!ctx || !selectedFile) return;
+    // Wait until `files` metadata for THIS commit has loaded — otherwise we'd
+    // fetch a (possibly Full-context) text diff for a file we don't yet know
+    // is binary or oversized.
+    if (filesCtx !== `${ctx.repoPath}:${ctx.hash}`) {
+      setDiffText(null);
+      return;
+    }
     if (isImage || isBinary) {
       setDiffText("");
       return;
@@ -146,7 +192,7 @@ export function DiffApp() {
     return () => {
       cancelled = true;
     };
-  }, [ctx?.repoPath, ctx?.hash, selectedFile, isImage, isBinary, context]);
+  }, [ctx?.repoPath, ctx?.hash, selectedFile, isImage, isBinary, context, filesCtx]);
 
   function onShellContextMenu(e: React.MouseEvent) {
     const target = e.target as HTMLElement;
@@ -224,19 +270,23 @@ export function DiffApp() {
             role="group"
             aria-label="Diff context"
           >
-            {CONTEXT_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                className={
-                  "diff-context-btn" + (context === o.value ? " active" : "")
-                }
-                onClick={() => setContext(o.value)}
-                title={o.title}
-              >
-                {o.label}
-              </button>
-            ))}
+            {CONTEXT_OPTIONS.map((o) => {
+              const disabled = o.value === WHOLE_FILE_CONTEXT && isFullTooBig;
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  className={
+                    "diff-context-btn" + (context === o.value ? " active" : "")
+                  }
+                  disabled={disabled}
+                  onClick={() => setContext(o.value)}
+                  title={disabled ? "File too large for full context" : o.title}
+                >
+                  {o.label}
+                </button>
+              );
+            })}
           </div>
         )}
       </header>

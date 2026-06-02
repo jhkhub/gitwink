@@ -1622,6 +1622,12 @@ body,
   opacity: 1;
 }
 
+.diff-context-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  background: transparent;
+}
+
 .diff-context-btn.active {
   background: rgba(80, 130, 240, 0.9);
   color: #fff;
