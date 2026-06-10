@@ -843,6 +843,56 @@ function App() {
         ) : singleMode ? (
           filteredCommits == null ? (
             <p className="panel-empty">Loading commits…</p>
+          ) : filteredCommits.length === 0 ? (
+            // Filter-aware empty state — name the filter hiding the
+            // commits and offer the one-click way out, instead of making
+            // the user debug the time/author/branch filter stack.
+            <div className="panel-empty">
+              <p className="panel-empty-line">
+                {windowDays !== "all"
+                  ? windowDays === 1
+                    ? "No commits in the last 24 hours."
+                    : `No commits in the last ${windowDays} days.`
+                  : "No commits match."}
+                {selectedAuthors !== "all" &&
+                  ` Filtered to ${selectedAuthors.length} author${selectedAuthors.length === 1 ? "" : "s"}.`}
+                {selectedBranches !== "all" &&
+                  ` Filtered to ${selectedBranches.length} branch${selectedBranches.length === 1 ? "" : "es"}.`}
+              </p>
+              {(windowDays !== "all" ||
+                selectedAuthors !== "all" ||
+                selectedBranches !== "all") && (
+                <p className="panel-empty-actions">
+                  {windowDays !== "all" && (
+                    <button
+                      type="button"
+                      className="panel-empty-action"
+                      onClick={() => setWindowDays("all")}
+                    >
+                      Show all time
+                    </button>
+                  )}
+                  {selectedAuthors !== "all" && (
+                    <button
+                      type="button"
+                      className="panel-empty-action"
+                      onClick={() => setSelectedAuthors("all")}
+                    >
+                      Clear author filter
+                    </button>
+                  )}
+                  {selectedBranches !== "all" && (
+                    <button
+                      type="button"
+                      className="panel-empty-action"
+                      onClick={() => handleBranchChange("all")}
+                    >
+                      All branches
+                    </button>
+                  )}
+                </p>
+              )}
+            </div>
           ) : (
             <Timeline
               key={`single:${selectedRepoPath}`}

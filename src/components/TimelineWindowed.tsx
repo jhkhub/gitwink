@@ -681,7 +681,9 @@ export function TimelineWindowed({
         <div className="panel-empty">
           <p className="panel-empty-line">
             {windowDays != null
-              ? `No commits in the last ${windowDays} day${windowDays === 1 ? "" : "s"}.`
+              ? windowDays === 1
+                ? "No commits in the last 24 hours."
+                : `No commits in the last ${windowDays} days.`
               : "No commits match."}
             {authors != null &&
               ` Filtered to ${authors.length} author${authors.length === 1 ? "" : "s"}.`}
