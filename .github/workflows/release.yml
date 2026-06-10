@@ -84,7 +84,11 @@ jobs:
           releaseName: 'gitwink ${{ github.ref_name }}'
           releaseBody: ${{ steps.changelog.outputs.body }}
           releaseDraft: false
-          prerelease: false
+          # rc/beta tags (v0.6.0-rc1) must publish as prereleases: GitHub
+          # excludes those from /releases/latest, which is BOTH the in-app
+          # updater endpoint and the README download link. Hardcoding false
+          # here would push an rc to the entire install base.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           args: ${{ matrix.args }}
 
   # Open a PR against microsoft/winget-pkgs with the bumped NSIS installer.
