@@ -858,6 +858,8 @@ function App() {
             windowDays={toWindowParam(windowDays)}
             refreshNonce={refreshNonce}
             onSelectRepo={setSelectedRepoPath}
+            onShowAllTime={() => setWindowDays("all")}
+            onClearAuthors={() => setSelectedAuthors("all")}
           />
         )}
         {allRepos.length > 0 && (

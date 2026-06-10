@@ -30,3 +30,12 @@ export function colorForBranch(name: string | null | undefined): string {
   if (NEUTRAL_BRANCHES.has(name)) return NEUTRAL;
   return PALETTE[hash(name) % PALETTE.length];
 }
+
+/** Stable identity color for a repo in the all-repos timeline. Hashes the
+ *  repo PATH, not the display name — two clones of the same project should
+ *  still read as distinct rows. Every repo gets a palette slot (no neutral
+ *  set): the whole point is a pre-attentive cue, so the eye can chunk the
+ *  interleaved timeline by repo instead of reading each name. */
+export function colorForRepo(repoPath: string): string {
+  return PALETTE[hash(repoPath) % PALETTE.length];
+}

@@ -410,6 +410,22 @@ export function Timeline({ commits, branches, resetKey }: Props) {
           onClose={() => setContextMenu(null)}
         />
       )}
+      {/* Anchor stays mounted so the aria-live region exists BEFORE content
+          arrives — screen readers only announce changes inside an existing
+          live region, not regions mounted together with their content. */}
+      <div className="timeline-copy-toast-anchor" aria-live="polite">
+        {copyStatus !== "idle" && (
+          <span
+            className={
+              "timeline-copy-toast" + (copyStatus === "error" ? " error" : "")
+            }
+          >
+            {copyStatus === "copied"
+              ? "Copied as AI context ✓"
+              : "Copy failed — try again"}
+          </span>
+        )}
+      </div>
       {total === 0 ? (
         <p className="panel-empty">No commits match.</p>
       ) : (

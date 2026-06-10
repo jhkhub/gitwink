@@ -878,6 +878,34 @@ body,
   margin-top: 40%;
 }
 
+/* Filter-aware empty state: name the filter that's hiding the commits and
+   offer the one-click way out. Lives inside .panel-empty (a div variant). */
+.panel-empty-line {
+  margin: 0 0 8px;
+}
+
+.panel-empty-actions {
+  margin: 0;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.panel-empty-action {
+  padding: 3px 10px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.panel-empty-action:hover {
+  border-color: #5b5df0;
+  color: #5b5df0;
+}
+
 /* ----- timeline ----- */
 
 .timeline {
@@ -939,6 +967,49 @@ body,
 
 .timeline-new-pill:hover {
   background: #6f71f3;
+}
+
+/* Copy-as-AI-context toast — confirms the 'c' shortcut even when no row is
+   expanded (the keyboard path used to copy in total silence; worse, a
+   failure left the previous clipboard in place with no hint). Same sticky
+   zero-height anchor trick as the new-commits pill, parked just below the
+   pill slot so the two never overlap. */
+.timeline-copy-toast-anchor {
+  position: sticky;
+  top: 0;
+  height: 0;
+  z-index: 6;
+}
+
+.timeline-copy-toast {
+  position: absolute;
+  top: 34px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  border-radius: 11px;
+  background: rgba(40, 44, 52, 0.92);
+  color: #d6f5dd;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+  pointer-events: none;
+}
+
+.timeline-copy-toast.error {
+  color: #ffc7c7;
+}
+
+@media (prefers-color-scheme: light) {
+  .timeline-copy-toast {
+    background: rgba(255, 255, 255, 0.95);
+    color: #1d7a3a;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+  }
+  .timeline-copy-toast.error {
+    color: #b3261e;
+  }
 }
 
 /* All-repos mode: marker · time · repo · summary · author */
@@ -1094,6 +1165,20 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Per-repo identity dot — the pre-attentive cue that lets the eye chunk
+   the interleaved all-repos timeline by repo instead of reading each name.
+   Low-key on purpose: the summary column must keep dominating. */
+.timeline-repo-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: baseline;
+  opacity: 0.85;
+  flex-shrink: 0;
 }
 
 .timeline-repo-clickable {

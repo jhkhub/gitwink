@@ -20,6 +20,7 @@ import {
 } from "react";
 
 import type { CommitSummary } from "../types";
+import { colorForRepo } from "../lib/colors";
 import {
   buildCommitMenuItems,
   copyCommitAiContext,
@@ -52,6 +53,10 @@ interface Props {
   refreshNonce: number;
   /** clicking the repo cell jumps to single-repo mode */
   onSelectRepo: (repoPath: string) => void;
+  /** empty-state action: widen the time window to "All time" */
+  onShowAllTime?: () => void;
+  /** empty-state action: clear the author filter back to "all" */
+  onClearAuthors?: () => void;
 }
 
 function timeAgo(unixSeconds: number): string {
@@ -93,6 +98,8 @@ export function TimelineWindowed({
   windowDays,
   refreshNonce,
   onSelectRepo,
+  onShowAllTime,
+  onClearAuthors,
 }: Props) {
   const {
     rows,
@@ -103,6 +110,7 @@ export function TimelineWindowed({
     recovery,
     requestRange,
     reloadLatest,
+    reloadInPlace,
     countNew,
   } = useTimelineWindow({
     repoIds,
@@ -121,6 +129,10 @@ export function TimelineWindowed({
   // reads the live expanded state without re-subscribing on every toggle.
   const expandedKeyRef = useRef<string | null>(null);
   expandedKeyRef.current = expandedKey;
+  // Ref mirror of `status` for the same listener — a delete-burst reload
+  // must yield to an in-flight reload instead of cancelling it.
+  const statusRef = useRef(status);
+  statusRef.current = status;
   // Anchors for the follow-expanded effect: track the open commit's key, its
   // last global index, and the last recovery nonce so a list shift can be told
   // apart from a click / a filter-change recovery.
@@ -334,9 +346,27 @@ export function TimelineWindowed({
     let unlisten: (() => void) | undefined;
     let timer: number | undefined;
     let disposed = false;
-    void onTimelineInvalidated(() => {
+    // Whether the debounced burst included reconciled deletions (history
+    // was rewritten). Rows the reader is looking at may no longer exist,
+    // so a mid-scroll view re-pulls in place instead of waiting for the
+    // next summon — a stale "N new" pill is annoying, stale ghost commits
+    // are a lie.
+    let sawDeletes = false;
+    void onTimelineInvalidated((p) => {
+      if (p.deleted > 0) sawDeletes = true;
       if (timer) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
+      const fire = () => {
+        if (disposed) return;
+        // A reload is already in flight (filter change / summon). Firing
+        // reloadInPlace now would bump the query id, cancel that reload,
+        // and silently drop its chained git→cache refill — wait it out and
+        // re-decide with this burst's flags intact.
+        if (statusRef.current === "loading") {
+          timer = window.setTimeout(fire, INVALIDATE_DEBOUNCE_MS);
+          return;
+        }
+        const burstHadDeletes = sawDeletes;
+        sawDeletes = false;
         void (async () => {
           const el = scrollRef.current;
           // At the very top with nothing expanded → auto-advance to the
@@ -349,12 +379,19 @@ export function TimelineWindowed({
             expandedKeyRef.current == null
           ) {
             reloadLatest();
+          } else if (burstHadDeletes) {
+            // The re-pull re-pins generation + count, so any pending "N
+            // new" pill is satisfied by the same pass — clear it rather
+            // than leave a stale number floating.
+            setNewCount(0);
+            reloadInPlace();
           } else {
             const n = await countNew();
             if (!disposed && n > 0) setNewCount(n);
           }
         })();
-      }, INVALIDATE_DEBOUNCE_MS);
+      };
+      timer = window.setTimeout(fire, INVALIDATE_DEBOUNCE_MS);
     }).then((un) => {
       if (disposed) un();
       else unlisten = un;
@@ -364,7 +401,7 @@ export function TimelineWindowed({
       unlisten?.();
       if (timer) window.clearTimeout(timer);
     };
-  }, [reloadLatest, countNew]);
+  }, [reloadLatest, reloadInPlace, countNew]);
 
   // ----- keyboard nav (j / k / Enter / c / Esc) -----
   useEffect(() => {
@@ -522,6 +559,11 @@ export function TimelineWindowed({
               onSelectRepo(c.repoPath);
             }}
           >
+            <span
+              className="timeline-repo-dot"
+              style={{ background: colorForRepo(c.repoPath) }}
+              aria-hidden="true"
+            />
             {c.repoName}
           </span>
           <span className="timeline-summary" title={c.summary}>
@@ -615,12 +657,58 @@ export function TimelineWindowed({
           </button>
         </div>
       )}
+      {/* Anchor stays mounted so the aria-live region exists BEFORE content
+          arrives — screen readers only announce changes inside an existing
+          live region, not regions mounted together with their content. */}
+      <div className="timeline-copy-toast-anchor" aria-live="polite">
+        {copyStatus !== "idle" && (
+          <span
+            className={
+              "timeline-copy-toast" + (copyStatus === "error" ? " error" : "")
+            }
+          >
+            {copyStatus === "copied"
+              ? "Copied as AI context ✓"
+              : "Copy failed — try again"}
+          </span>
+        )}
+      </div>
       {status === "error" ? (
         <p className="panel-empty">Couldn't load the timeline.</p>
       ) : status === "loading" && count === 0 ? (
         <p className="panel-empty">Loading commits…</p>
       ) : showEmpty ? (
-        <p className="panel-empty">No commits match.</p>
+        <div className="panel-empty">
+          <p className="panel-empty-line">
+            {windowDays != null
+              ? `No commits in the last ${windowDays} day${windowDays === 1 ? "" : "s"}.`
+              : "No commits match."}
+            {authors != null &&
+              ` Filtered to ${authors.length} author${authors.length === 1 ? "" : "s"}.`}
+          </p>
+          {(windowDays != null || authors != null) && (
+            <p className="panel-empty-actions">
+              {windowDays != null && onShowAllTime && (
+                <button
+                  type="button"
+                  className="panel-empty-action"
+                  onClick={onShowAllTime}
+                >
+                  Show all time
+                </button>
+              )}
+              {authors != null && onClearAuthors && (
+                <button
+                  type="button"
+                  className="panel-empty-action"
+                  onClick={onClearAuthors}
+                >
+                  Clear author filter
+                </button>
+              )}
+            </p>
+          )}
+        </div>
       ) : (
         <ul
           className="timeline-windowed-list timeline-all"
