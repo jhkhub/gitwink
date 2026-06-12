@@ -5,6 +5,36 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-06-12
+
+### Added
+
+- **Commit search, with a "warp" to context** — press `/` (or `Ctrl+F`), or
+  click the new ⌕ button in the header. The timeline itself becomes the
+  result list: words match the commit message (full body), author, and repo
+  name, all words must match, and a 4+ character hex term matches hashes by
+  prefix. The repo scope is respected; the time window and author filters
+  are bypassed while searching (shown dimmed) — the commit you're hunting
+  must never hide behind "30d". Press Enter (or the row's ↗) to warp: you
+  land in that commit's repo history with the branch filter reset, the
+  author filter cleared, and the time window widened just enough to cover
+  it — the commit arrives centered, selected, with a highlight pulse. Esc
+  steps back: first to the results, then to the view you started from.
+- Empty states offer "Search commits" — staring at "no commits match" while
+  hunting for one is exactly the moment to learn search exists.
+
+### Fixed
+
+- **The single-repo graph no longer shatters under an author filter.**
+  Filtering by author used to leak one graph lane per merge — dots
+  staircasing rightward over a bundle of full-height vertical lines, on
+  merge-heavy repos within one screenful. Hidden commits are now bridged:
+  parent links re-route to the nearest visible ancestor and draw dashed
+  ("history elided here"), so the graph stays one coherent set of lanes.
+
+Search covers the scanned commit cache; exact lookup of arbitrary old SHAs
+(and warping beyond the loaded window) is planned as the next step.
+
 ## [0.6.0] — 2026-06-10
 
 ### Added
