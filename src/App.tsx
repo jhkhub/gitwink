@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -8,8 +8,12 @@ import { AuthorsChip } from "./components/AuthorsChip";
 import { BranchChip } from "./components/BranchChip";
 import { ContextMenu, type MenuItem } from "./components/ContextMenu";
 import { RepoChip } from "./components/RepoChip";
+import { SearchBar } from "./components/SearchBar";
 import { Timeline } from "./components/Timeline";
-import { TimelineWindowed } from "./components/TimelineWindowed";
+import {
+  TimelineWindowed,
+  type SearchControl,
+} from "./components/TimelineWindowed";
 import { TimeRangeChip } from "./components/TimeRangeChip";
 import {
   currentUpstreamStatus,
@@ -122,6 +126,30 @@ function toWindowParam(w: WindowDays): number | null {
   return w === "all" ? null : (w as number);
 }
 
+/** Smallest TimeRangeChip preset that still covers `commitTs`, keeping the
+ * current pick when it already does. The warp uses this so the landing
+ * view's time window can't hide the commit it just jumped to. The 6h
+ * margin keeps a commit sitting right at a cutoff from falling out when
+ * the backend recomputes `since` at fetch time. */
+function windowCovering(current: WindowDays, commitTs: number): WindowDays {
+  if (current === "all") return "all";
+  const ageDays = (Date.now() / 1000 - commitTs) / 86_400 + 0.25;
+  if (ageDays < current) return current;
+  for (const preset of [1, 3, 7, 30] as const) {
+    if (ageDays < preset) return preset;
+  }
+  return "all";
+}
+
+/** The view state a warp replaces — restored by Esc (back to search). */
+interface WarpReturn {
+  repoPath: string | null;
+  repoPaths: string[] | "all";
+  branches: string[] | "all";
+  windowDays: WindowDays;
+  authors: string[] | "all";
+}
+
 function App() {
   const [scanning, setScanning] = useState(false);
   const [commits, setCommits] = useState<CommitSummary[] | null>(null);
@@ -156,6 +184,40 @@ function App() {
   // author facet, and the single-repo commits effect all depend on it, so
   // re-showing the panel re-pulls (covering anything the watcher missed).
   const [refreshNonce, setRefreshNonce] = useState(0);
+
+  // ----- commit search (the `/` summon) + warp -----
+  // `searchInput` is the live keystrokes; `searchQuery` is its debounced
+  // mirror that actually drives the windowed query. While a non-empty
+  // query is active the timeline body becomes the result list and the
+  // time/author/branch chips are bypassed (they are view lenses — hiding
+  // the commit you're hunting behind "30d" is the frustration search
+  // exists to kill). The repo scope IS respected.
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchCount, setSearchCount] = useState<number | null>(null);
+  const [searchFocusNonce, setSearchFocusNonce] = useState(0);
+  // Warp = Enter on a result: land in that commit's single-repo history
+  // with the filters auto-corrected. `warpReturn` is the one-deep back
+  // stack (Esc → reopen the search), cleared by any manual chip change.
+  const [warpReturn, setWarpReturn] = useState<WarpReturn | null>(null);
+  const [warpAnchor, setWarpAnchor] = useState<{
+    hash: string;
+    nonce: number;
+  } | null>(null);
+  const warpNonceRef = useRef(0);
+  const searchControlRef = useRef<SearchControl | null>(null);
+  // One-shot: a warp just switched repos and forced "all branches" — the
+  // branch-selection effect must not re-apply the repo's saved selection
+  // over it (the warped-to commit may not be reachable from it).
+  const suppressBranchRestoreRef = useRef(false);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setSearchQuery(searchInput), 150);
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
+
+  const searching = searchOpen && searchQuery.trim().length > 0;
 
   const [openChip, setOpenChip] = useState<
     "repo" | "time" | "authors" | "branch" | null
@@ -381,11 +443,18 @@ function App() {
       return;
     }
     setSelectedBranches("all");
+    // A warp forced "all branches" so its target commit is reachable —
+    // consume the one-shot flag instead of re-applying the repo's saved
+    // selection over it. (The branch LIST still loads for the chip.)
+    const suppressSaved = suppressBranchRestoreRef.current;
+    suppressBranchRestoreRef.current = false;
     let cancelled = false;
     (async () => {
       try {
-        const saved = await getBranchSelection(selectedRepoPath);
-        if (!cancelled && saved.length > 0) setSelectedBranches(saved);
+        if (!suppressSaved) {
+          const saved = await getBranchSelection(selectedRepoPath);
+          if (!cancelled && saved.length > 0) setSelectedBranches(saved);
+        }
       } catch {}
       try {
         const bs = await listBranches(selectedRepoPath);
@@ -403,6 +472,7 @@ function App() {
   // thing.
   const handleBranchChange = useCallback(
     (sel: string[] | "all") => {
+      setWarpReturn(null); // manual chip change = the warp back-stack is stale
       setSelectedBranches(sel);
       if (selectedRepoPath) {
         void saveBranchSelection(selectedRepoPath, sel === "all" ? [] : sel);
@@ -410,6 +480,62 @@ function App() {
     },
     [selectedRepoPath],
   );
+
+  // ----- search → warp → back -----
+  // Warp: land in the commit's single-repo history with the filters
+  // auto-corrected — branches "all" (the commit may live on any ref),
+  // authors cleared (its neighbourhood is everyone's work), time window
+  // widened just enough to cover it. The replaced view goes on the
+  // one-deep back stack.
+  const performWarp = useCallback(
+    (c: CommitSummary) => {
+      setWarpReturn({
+        repoPath: selectedRepoPath,
+        repoPaths: selectedRepoPaths,
+        branches: selectedBranches,
+        windowDays,
+        authors: selectedAuthors,
+      });
+      suppressBranchRestoreRef.current = c.repoPath !== selectedRepoPath;
+      setSelectedRepoPath(c.repoPath);
+      setSelectedBranches("all");
+      setSelectedAuthors("all");
+      setWindowDays((cur) => windowCovering(cur, c.timestamp));
+      setSearchOpen(false);
+      setSearchCount(null);
+      warpNonceRef.current += 1;
+      setWarpAnchor({ hash: c.hash, nonce: warpNonceRef.current });
+    },
+    [
+      selectedRepoPath,
+      selectedRepoPaths,
+      selectedBranches,
+      windowDays,
+      selectedAuthors,
+    ],
+  );
+
+  // Esc from a warped view: restore the replaced view and reopen the
+  // search bar with its query intact (the next Esc closes that too).
+  const returnToSearch = useCallback(() => {
+    const w = warpReturn;
+    if (!w) return;
+    suppressBranchRestoreRef.current = false;
+    setWarpReturn(null);
+    setWarpAnchor(null);
+    setSelectedRepoPath(w.repoPath);
+    setSelectedRepoPaths(w.repoPaths);
+    setSelectedBranches(w.branches);
+    setWindowDays(w.windowDays);
+    setSelectedAuthors(w.authors);
+    setSearchOpen(true);
+    setSearchFocusNonce((n) => n + 1);
+  }, [warpReturn]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchCount(null);
+  }, []);
 
   // ----- single-repo mode: upstream status (selection-aware) -----
   // Refetches whenever the repo OR the BranchChip selection changes. Logic:
@@ -611,7 +737,37 @@ function App() {
     return () => window.removeEventListener("paste", onPaste);
   }, [tryAddPath]);
 
-  // ----- ESC layer cascade: chip → expansion (in Timeline) → single-repo → hide panel -----
+  // ----- `/` (or Ctrl+F): summon the commit search bar -----
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" ||
+          tag === "TEXTAREA" ||
+          target.getAttribute("contenteditable") === "true"
+        ) {
+          return;
+        }
+      }
+      const slash =
+        e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey;
+      const ctrlF =
+        (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f" && !e.altKey;
+      if (!slash && !ctrlF) return;
+      if (updateModal) return;
+      e.preventDefault();
+      setOpenChip(null);
+      setSearchOpen(true);
+      setSearchFocusNonce((n) => n + 1);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [updateModal]);
+
+  // ----- ESC layer cascade: chip → expansion (in Timeline) → search →
+  // warp-return → single-repo → hide panel -----
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
@@ -624,7 +780,21 @@ function App() {
       if (openChip != null) return; // dropdown handles its own Esc
       // Timeline's Esc handler stopImmediatePropagation()s if an
       // expansion is open, so by the time we get here neither a
-      // dropdown nor an expansion needs Esc.
+      // dropdown nor an expansion needs Esc. (The search input's own Esc
+      // is also stopPropagation'd — this branch covers Esc pressed while
+      // focus is on the result list.)
+      if (searchOpen) {
+        closeSearch();
+        e.preventDefault();
+        return;
+      }
+      // A warped view: Esc goes BACK (restore the replaced view + reopen
+      // the search), not out of single-repo mode.
+      if (warpReturn) {
+        returnToSearch();
+        e.preventDefault();
+        return;
+      }
       if (singleMode) {
         setSelectedRepoPath(null);
         e.preventDefault();
@@ -636,7 +806,15 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openChip, singleMode, updateModal]);
+  }, [
+    openChip,
+    singleMode,
+    updateModal,
+    searchOpen,
+    warpReturn,
+    closeSearch,
+    returnToSearch,
+  ]);
 
   // Single-repo mode tallies authors from its (bounded) loaded commits;
   // all-repos mode uses the backend facet (`authorsAll`).
@@ -684,6 +862,35 @@ function App() {
     return ids.length > 0 ? ids : null;
   }, [selectedRepoPaths, allRepos]);
 
+  // Search scope: the repo dimension IS respected — single-repo mode
+  // searches that repo, all-repos mode follows the RepoChip selection.
+  // (A just-discovered repo whose id is still 0 falls back to all repos
+  // rather than silently searching nothing.)
+  const searchRepoIds = useMemo<number[] | null>(() => {
+    if (!singleMode) return repoIds;
+    const id = allRepos.find((r) => r.path === selectedRepoPath)?.id;
+    return id != null && id > 0 ? [id] : null;
+  }, [singleMode, repoIds, allRepos, selectedRepoPath]);
+
+  // Manual chip changes invalidate the warp back-stack (the user has
+  // navigated on their own — Esc should not yank them to an old view).
+  const changeWindowDays = useCallback((v: WindowDays) => {
+    setWarpReturn(null);
+    setWindowDays(v);
+  }, []);
+  const changeAuthors = useCallback((v: string[] | "all") => {
+    setWarpReturn(null);
+    setSelectedAuthors(v);
+  }, []);
+  const changeRepoPath = useCallback((p: string | null) => {
+    setWarpReturn(null);
+    setSelectedRepoPath(p);
+  }, []);
+  const changeRepoPaths = useCallback((ps: string[] | "all") => {
+    setWarpReturn(null);
+    setSelectedRepoPaths(ps);
+  }, []);
+
   function togglePin(path: string) {
     setPinnedRepos((prev) => {
       const next = prev.includes(path)
@@ -728,6 +935,16 @@ function App() {
           draggable={false}
         />
         <div className="header-chips">
+          {warpReturn && !searchOpen && (
+            <button
+              type="button"
+              className="warp-back"
+              onClick={returnToSearch}
+              title="Back to search results (Esc)"
+            >
+              ‹ search
+            </button>
+          )}
           <RepoChip
             open={openChip === "repo"}
             onToggle={() => setOpenChip(openChip === "repo" ? null : "repo")}
@@ -737,8 +954,8 @@ function App() {
             pinned={pinnedRepos}
             selectedPath={selectedRepoPath}
             selectedPaths={selectedRepoPaths}
-            onSelect={setSelectedRepoPath}
-            onSelectMulti={setSelectedRepoPaths}
+            onSelect={changeRepoPath}
+            onSelectMulti={changeRepoPaths}
             onTogglePin={togglePin}
             onHide={(path) => {
               // Optimistic: drop from local list immediately; backend
@@ -756,37 +973,55 @@ function App() {
             totalRepoCount={repoCount}
           />
           {singleMode && (
-            <BranchChip
-              open={openChip === "branch"}
-              onToggle={() =>
-                setOpenChip(openChip === "branch" ? null : "branch")
-              }
-              onClose={() => setOpenChip(null)}
-              branches={branches}
-              selected={selectedBranches}
-              onChange={handleBranchChange}
-            />
+            <span
+              className={searching ? "chip-dimmed" : undefined}
+              title={searching ? "Not applied while searching" : undefined}
+            >
+              <BranchChip
+                open={openChip === "branch"}
+                onToggle={() =>
+                  setOpenChip(openChip === "branch" ? null : "branch")
+                }
+                onClose={() => setOpenChip(null)}
+                branches={branches}
+                selected={selectedBranches}
+                onChange={handleBranchChange}
+              />
+            </span>
           )}
           {singleMode && upstream && (
             <UpstreamBadge status={upstream} />
           )}
-          <TimeRangeChip
-            open={openChip === "time"}
-            onToggle={() => setOpenChip(openChip === "time" ? null : "time")}
-            onClose={() => setOpenChip(null)}
-            value={windowDays}
-            onChange={setWindowDays}
-          />
-          <AuthorsChip
-            open={openChip === "authors"}
-            onToggle={() =>
-              setOpenChip(openChip === "authors" ? null : "authors")
-            }
-            onClose={() => setOpenChip(null)}
-            authors={authors}
-            selected={selectedAuthors}
-            onChange={setSelectedAuthors}
-          />
+          {/* Time + author chips are view lenses — an active search
+              bypasses them (dimmed to say so). The repo scope above
+              stays live. */}
+          <span
+            className={searching ? "chip-dimmed" : undefined}
+            title={searching ? "Not applied while searching" : undefined}
+          >
+            <TimeRangeChip
+              open={openChip === "time"}
+              onToggle={() => setOpenChip(openChip === "time" ? null : "time")}
+              onClose={() => setOpenChip(null)}
+              value={windowDays}
+              onChange={changeWindowDays}
+            />
+          </span>
+          <span
+            className={searching ? "chip-dimmed" : undefined}
+            title={searching ? "Not applied while searching" : undefined}
+          >
+            <AuthorsChip
+              open={openChip === "authors"}
+              onToggle={() =>
+                setOpenChip(openChip === "authors" ? null : "authors")
+              }
+              onClose={() => setOpenChip(null)}
+              authors={authors}
+              selected={selectedAuthors}
+              onChange={changeAuthors}
+            />
+          </span>
         </div>
         <div className="panel-drag-handle" />
         {scanning && <span className="panel-status">Scanning…</span>}
@@ -833,12 +1068,42 @@ function App() {
           ✕
         </button>
       </header>
+      {searchOpen && (
+        <SearchBar
+          value={searchInput}
+          count={searching ? searchCount : null}
+          focusNonce={searchFocusNonce}
+          onChange={setSearchInput}
+          onClose={closeSearch}
+          onMove={(d) => searchControlRef.current?.moveSelection(d)}
+          onActivate={() => searchControlRef.current?.activateSelected()}
+        />
+      )}
       <section className="panel-body">
         {allRepos.length === 0 && !singleMode ? (
           <EmptyDropPanel
             scanning={scanning}
             addError={addError}
             onBrowse={() => void handleAddRepo()}
+          />
+        ) : searching ? (
+          // Active search: the timeline body IS the result list — the
+          // same windowed machinery with the query as one more filter
+          // (time/author bypassed, repo scope respected). Enter / ↗
+          // warps into the commit's single-repo history.
+          <TimelineWindowed
+            key="search-results"
+            repoIds={searchRepoIds}
+            authors={null}
+            windowDays={null}
+            refreshNonce={refreshNonce}
+            query={searchQuery}
+            skipRefill
+            searchMode
+            onWarp={performWarp}
+            searchControlRef={searchControlRef}
+            onResultCount={setSearchCount}
+            onSelectRepo={changeRepoPath}
           />
         ) : singleMode ? (
           filteredCommits == null ? (
@@ -867,7 +1132,7 @@ function App() {
                     <button
                       type="button"
                       className="panel-empty-action"
-                      onClick={() => setWindowDays("all")}
+                      onClick={() => changeWindowDays("all")}
                     >
                       Show all time
                     </button>
@@ -876,7 +1141,7 @@ function App() {
                     <button
                       type="button"
                       className="panel-empty-action"
-                      onClick={() => setSelectedAuthors("all")}
+                      onClick={() => changeAuthors("all")}
                     >
                       Clear author filter
                     </button>
@@ -900,6 +1165,7 @@ function App() {
               allCommits={commits ?? undefined}
               branches={branches}
               resetKey={`${JSON.stringify(selectedBranches)}|${windowDays}|${JSON.stringify(selectedAuthors)}`}
+              anchor={warpAnchor}
             />
           )
         ) : (
@@ -908,9 +1174,9 @@ function App() {
             authors={selectedAuthors === "all" ? null : selectedAuthors}
             windowDays={toWindowParam(windowDays)}
             refreshNonce={refreshNonce}
-            onSelectRepo={setSelectedRepoPath}
-            onShowAllTime={() => setWindowDays("all")}
-            onClearAuthors={() => setSelectedAuthors("all")}
+            onSelectRepo={changeRepoPath}
+            onShowAllTime={() => changeWindowDays("all")}
+            onClearAuthors={() => changeAuthors("all")}
           />
         )}
         {allRepos.length > 0 && (

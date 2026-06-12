@@ -42,6 +42,13 @@ const OVERSCAN = 8;
 /** Collapse a burst of `timeline://invalidated` events into one reload. */
 const INVALIDATE_DEBOUNCE_MS = 350;
 
+/** Imperative selection controls the search bar drives while keyboard
+ * focus stays in its input (↑/↓/Enter act on the result rows). */
+export interface SearchControl {
+  moveSelection: (delta: number) => void;
+  activateSelected: () => void;
+}
+
 interface Props {
   /** repo-id filter, or null for all repos */
   repoIds: number[] | null;
@@ -57,6 +64,20 @@ interface Props {
   onShowAllTime?: () => void;
   /** empty-state action: clear the author filter back to "all" */
   onClearAuthors?: () => void;
+  /** free-text search filter — search-results rendering of the timeline */
+  query?: string | null;
+  /** pure cache re-query: never chain the git→cache refill (search view) */
+  skipRefill?: boolean;
+  /** Search-results mode: Enter warps via `onWarp` instead of expanding
+   *  (click still previews inline), rows grow a jump affordance, and the
+   *  empty state reads as a search miss. */
+  searchMode?: boolean;
+  /** warp to a commit's context — search-mode Enter / jump-button click */
+  onWarp?: (c: CommitSummary) => void;
+  /** filled with the imperative selection controls (see SearchControl) */
+  searchControlRef?: React.MutableRefObject<SearchControl | null>;
+  /** reports the filtered count (null while loading) — the bar's label */
+  onResultCount?: (n: number | null) => void;
 }
 
 function timeAgo(unixSeconds: number): string {
@@ -100,6 +121,12 @@ export function TimelineWindowed({
   onSelectRepo,
   onShowAllTime,
   onClearAuthors,
+  query,
+  skipRefill,
+  searchMode,
+  onWarp,
+  searchControlRef,
+  onResultCount,
 }: Props) {
   const {
     rows,
@@ -117,6 +144,8 @@ export function TimelineWindowed({
     authors,
     windowDays,
     refreshNonce,
+    query,
+    skipRefill,
   });
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -416,7 +445,12 @@ export function TimelineWindowed({
         e.preventDefault();
       } else if (e.key === "Enter") {
         const c = commitAt(selected);
-        if (c) toggleExpand(rowKey(c));
+        // Search results: Enter is the warp ("take me to its history"),
+        // matching the search bar's Enter. Click still previews inline.
+        if (c) {
+          if (searchMode && onWarp) onWarp(c);
+          else toggleExpand(rowKey(c));
+        }
         e.preventDefault();
       } else if (e.key === "c" || e.key === "C") {
         const c = commitAt(selected);
@@ -432,7 +466,40 @@ export function TimelineWindowed({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commitAt, selected, count, toggleExpand, expandedKey, copyAiContext]);
+  }, [
+    commitAt,
+    selected,
+    count,
+    toggleExpand,
+    expandedKey,
+    copyAiContext,
+    searchMode,
+    onWarp,
+  ]);
+
+  // Hand the search bar its selection bridge — its input keeps keyboard
+  // focus, so ↑/↓/Enter arrive there and are forwarded through this.
+  useEffect(() => {
+    if (!searchControlRef) return;
+    searchControlRef.current = {
+      moveSelection: (delta) =>
+        setSelected((s) =>
+          Math.max(0, Math.min(s + delta, Math.max(0, count - 1))),
+        ),
+      activateSelected: () => {
+        const c = commitAt(selected);
+        if (c && onWarp) onWarp(c);
+      },
+    };
+    return () => {
+      searchControlRef.current = null;
+    };
+  }, [searchControlRef, count, commitAt, selected, onWarp]);
+
+  // Surface the filtered total — the search bar's "N matches" label.
+  useEffect(() => {
+    onResultCount?.(status === "ready" ? count : null);
+  }, [onResultCount, status, count]);
 
   // Bring the selected row into view. Uses the live row geometry so a
   // selection below the open expansion still lands right.
@@ -588,6 +655,19 @@ export function TimelineWindowed({
           <span className="timeline-author" title={c.email}>
             {c.author}
           </span>
+          {searchMode && (
+            <button
+              type="button"
+              className="row-jump"
+              title="Jump to this commit in its repo's history (Enter)"
+              onClick={(e) => {
+                e.stopPropagation();
+                onWarp?.(c);
+              }}
+            >
+              ↗
+            </button>
+          )}
         </li>
         {expandedKey === key && (
           <li
@@ -677,6 +757,11 @@ export function TimelineWindowed({
         <p className="panel-empty">Couldn't load the timeline.</p>
       ) : status === "loading" && count === 0 ? (
         <p className="panel-empty">Loading commits…</p>
+      ) : showEmpty && searchMode ? (
+        // Search miss — the scan-window scope is the honest caveat (an
+        // old commit can live outside the cache; a full SHA will get a
+        // direct-lookup fallback in a later phase).
+        <p className="panel-empty">No matches in scanned history.</p>
       ) : showEmpty ? (
         <div className="panel-empty">
           <p className="panel-empty-line">
@@ -713,7 +798,10 @@ export function TimelineWindowed({
         </div>
       ) : (
         <ul
-          className="timeline-windowed-list timeline-all"
+          className={
+            "timeline-windowed-list timeline-all" +
+            (searchMode ? " timeline-search-list" : "")
+          }
           style={{ paddingTop: padTop, paddingBottom: padBottom }}
         >
           {items}

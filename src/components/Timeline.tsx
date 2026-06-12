@@ -59,6 +59,10 @@ interface Props {
    *  by refreshNonce) keeps the view, so a mid-view click isn't yanked back
    *  to the top. */
   resetKey?: string;
+  /** Warp landing (search → jump). When `nonce` changes, the row for
+   *  `hash` is selected, centred in the viewport and pulsed — retried as
+   *  `commits` refreshes until the hash is actually loaded. */
+  anchor?: { hash: string; nonce: number } | null;
 }
 
 function timeAgo(unixSeconds: number): string {
@@ -83,7 +87,13 @@ function formatFullTime(unixSeconds: number): string {
   });
 }
 
-export function Timeline({ commits, allCommits, branches, resetKey }: Props) {
+export function Timeline({
+  commits,
+  allCommits,
+  branches,
+  resetKey,
+  anchor,
+}: Props) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
   const [selected, setSelected] = useState(0);
@@ -237,6 +247,33 @@ export function Timeline({ commits, allCommits, branches, resetKey }: Props) {
     setScrollTop(0);
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [resetKey]);
+
+  // Warp landing — select + centre + pulse the anchored commit. Declared
+  // AFTER the resetKey effect so on a warp (which changes both) the anchor
+  // scroll wins over the reset-to-top within the same effect pass. Retries
+  // on every commits refresh until the hash is present (the repo's list
+  // loads async after a warp switches repo/filters); a hash beyond the
+  // loaded cap simply never applies.
+  const [pulseHash, setPulseHash] = useState<string | null>(null);
+  const anchorAppliedRef = useRef(0);
+  useEffect(() => {
+    if (!anchor || anchor.nonce === anchorAppliedRef.current) return;
+    const idx = commits.findIndex((c) => c.hash === anchor.hash);
+    if (idx < 0) return;
+    anchorAppliedRef.current = anchor.nonce;
+    setSelected(idx);
+    const el = scrollRef.current;
+    if (el) {
+      const top =
+        offsetOfRowRef.current(idx) -
+        Math.max(0, (el.clientHeight - ROW_H) / 2);
+      el.scrollTop = Math.max(0, top);
+      setScrollTop(el.scrollTop);
+    }
+    setPulseHash(anchor.hash);
+    const timer = window.setTimeout(() => setPulseHash(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [anchor, commits, ROW_H]);
 
   // Keep `selected` in range as the commit list changes.
   useEffect(() => {
@@ -467,7 +504,8 @@ export function Timeline({ commits, allCommits, branches, resetKey }: Props) {
                   className={
                     "timeline-row" +
                     (idx === selected ? " selected" : "") +
-                    (expandedHash === c.hash ? " expanded" : "")
+                    (expandedHash === c.hash ? " expanded" : "") +
+                    (pulseHash === c.hash ? " warp-pulse" : "")
                   }
                   onClick={() => {
                     setSelected(idx);

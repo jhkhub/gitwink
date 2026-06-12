@@ -197,6 +197,10 @@ export interface TimelineFilters {
    * generation are visible, so the scanner's later inserts don't disturb
    * the page sequence. null = no pin. */
   viewGeneration?: number | null;
+  /** Free-text commit search. Whitespace-separated terms AND together;
+   * each matches summary, message, author or repo name (substring), or a
+   * 4+ char hex term prefixes the hash. null/empty = no restriction. */
+  query?: string | null;
 }
 
 /** One keyset-paginated page of the timeline — mirrors `cache::CommitWindow`.

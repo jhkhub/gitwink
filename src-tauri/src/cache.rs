@@ -883,6 +883,11 @@ pub struct TimelineFilters {
     /// until it re-pins. `None` = no pin, every commit visible (the
     /// pre-Phase-2 behaviour the legacy non-windowed paths still rely on).
     pub view_generation: Option<i64>,
+    /// Free-text commit search. Whitespace-separated terms AND together;
+    /// each term must appear in the summary, full message, author or repo
+    /// name (substring), or — when it looks like a hex prefix of 4+ chars —
+    /// lead the commit hash. `None`/empty = no restriction.
+    pub query: Option<String>,
 }
 
 /// One page of the timeline plus the cursors/flags the UI needs to fetch
@@ -935,12 +940,30 @@ fn row_to_window_item(row: &rusqlite::Row) -> rusqlite::Result<(CommitSummary, C
     Ok((summary, cursor))
 }
 
+/// Search terms beyond this are ignored — keeps a pathological paste from
+/// exploding the WHERE clause. Six AND-ed terms already over-specify any
+/// realistic lookup.
+const QUERY_MAX_TERMS: usize = 6;
+
+/// Escape `%`, `_` and `\` for a `LIKE … ESCAPE '\'` pattern, so user-typed
+/// query text always matches literally.
+fn escape_like(term: &str) -> String {
+    let mut out = String::with_capacity(term.len());
+    for ch in term.chars() {
+        if matches!(ch, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// Build the SQL filter fragment (each piece prefixed with " AND ") plus
 /// the bound params it introduces. `repo_ids` go inline as an integer
 /// literal — they are our own row ids, never user text, and a huge
 /// multi-repo selection would otherwise blow past SQLite's bound-variable
-/// limit. `authors` (bounded, small), `since` and `view_generation` use
-/// bound params.
+/// limit. `authors` (bounded, small), `since`, `view_generation` and
+/// `query` terms use bound params.
 fn build_filter_sql(filters: &TimelineFilters) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
     let mut sql = String::new();
     let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -986,6 +1009,33 @@ fn build_filter_sql(filters: &TimelineFilters) -> (String, Vec<Box<dyn rusqlite:
             for a in authors {
                 params.push(Box::new(a.clone()));
             }
+        }
+    }
+    // Free-text search. Each term is a residual LIKE predicate over the
+    // timeline index scan — at the cache's bounded size (thousands of
+    // rows) that needs no FTS. SQLite's LIKE is ASCII-case-insensitive;
+    // non-ASCII (한글 etc.) matches exact substrings, which is the
+    // expected behaviour for those scripts.
+    if let Some(query) = &filters.query {
+        for term in query.split_whitespace().take(QUERY_MAX_TERMS) {
+            let pat = format!("%{}%", escape_like(term));
+            sql.push_str(
+                " AND (summary LIKE ? ESCAPE '\\' \
+                 OR message LIKE ? ESCAPE '\\' \
+                 OR author LIKE ? ESCAPE '\\' \
+                 OR repo_name LIKE ? ESCAPE '\\'",
+            );
+            for _ in 0..4 {
+                params.push(Box::new(pat.clone()));
+            }
+            // A hex-looking term of 4+ chars can also be a SHA prefix.
+            // Hashes are stored as lowercase hex, so prefix-match the
+            // lowered term (hex needs no LIKE escaping).
+            if term.len() >= 4 && term.chars().all(|c| c.is_ascii_hexdigit()) {
+                sql.push_str(" OR hash LIKE ?");
+                params.push(Box::new(format!("{}%", term.to_ascii_lowercase())));
+            }
+            sql.push(')');
         }
     }
     // MVCC-lite snapshot pin: hide commits first seen after the caller's
@@ -1523,6 +1573,37 @@ mod tests {
         insert_gen(conn, repo_id, hash, ts, author, 0);
     }
 
+    /// Insert one commit with explicit summary + message text (query tests).
+    fn insert_text(
+        conn: &Connection,
+        repo_id: i64,
+        hash: &str,
+        ts: i64,
+        author: &str,
+        summary: &str,
+        message: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO commits (repo_path, hash, repo_id, repo_name, \
+             short_hash, summary, author, email, timestamp, sort_ts, message) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                format!("/repo/{repo_id}"),
+                hash,
+                repo_id,
+                format!("repo{repo_id}"),
+                hash,
+                summary,
+                author,
+                "dev@example.com",
+                ts,
+                -ts,
+                message,
+            ],
+        )
+        .unwrap();
+    }
+
     /// Page through the whole timeline (Older direction) via the cursor
     /// chain, returning hashes newest-first.
     fn walk(conn: &Connection, filters: &TimelineFilters, page: usize) -> Vec<String> {
@@ -1606,6 +1687,80 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(count_commits(&conn, &none).unwrap(), 0);
+    }
+
+    #[test]
+    fn query_matches_text_author_repo_and_hash_prefix() {
+        let conn = test_db();
+        insert_text(
+            &conn,
+            1,
+            "abc1234deadbeef",
+            1_000,
+            "alice",
+            "fix login flow",
+            "fix login flow\n\nbody mentions OAuth scopes",
+        );
+        insert_text(
+            &conn,
+            1,
+            "fffe1111",
+            1_001,
+            "bob",
+            "popup api",
+            "popup api\n\nfullscreen popup close handling",
+        );
+        insert_text(
+            &conn,
+            2,
+            "9999aaaa",
+            1_002,
+            "carol",
+            "위치권한 수정",
+            "위치권한 수정\n\nios location permission",
+        );
+
+        let q = |s: &str| TimelineFilters {
+            query: Some(s.into()),
+            ..Default::default()
+        };
+        // summary / message-body substring (ASCII case-insensitive).
+        assert_eq!(count_commits(&conn, &q("LOGIN")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("oauth")).unwrap(), 1);
+        // multi-term = AND.
+        assert_eq!(count_commits(&conn, &q("popup fullscreen")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("popup oauth")).unwrap(), 0);
+        // author + repo name + non-ASCII substring.
+        assert_eq!(count_commits(&conn, &q("carol")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("repo2")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("위치권한")).unwrap(), 1);
+        // hash prefix needs 4+ hex chars; 3 fall back to text-only (no hit).
+        assert_eq!(count_commits(&conn, &q("abc1")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("ABC1")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("abc")).unwrap(), 0);
+        // composes with the other filters and the pagination machinery.
+        let scoped = TimelineFilters {
+            repo_ids: Some(vec![1]),
+            query: Some("api".into()),
+            ..Default::default()
+        };
+        assert_eq!(count_commits(&conn, &scoped).unwrap(), 1);
+        assert_eq!(walk(&conn, &scoped, 3), vec!["fffe1111".to_string()]);
+    }
+
+    #[test]
+    fn query_like_wildcards_match_literally() {
+        let conn = test_db();
+        insert_text(&conn, 1, "h1", 1_000, "alice", "100% coverage", "");
+        insert_text(&conn, 1, "h2", 1_001, "alice", "100 coverage", "");
+        insert_text(&conn, 1, "h3", 1_002, "alice", "a_b token", "");
+        insert_text(&conn, 1, "h4", 1_003, "alice", "axb token", "");
+        let q = |s: &str| TimelineFilters {
+            query: Some(s.into()),
+            ..Default::default()
+        };
+        assert_eq!(count_commits(&conn, &q("100%")).unwrap(), 1);
+        assert_eq!(count_commits(&conn, &q("a_b")).unwrap(), 1);
     }
 
     #[test]

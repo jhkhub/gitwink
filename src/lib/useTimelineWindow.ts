@@ -74,6 +74,12 @@ export interface TimelineWindowParams {
   windowDays: number | null;
   /** bumped by the caller to force a reload (panel re-summoned) */
   refreshNonce: number;
+  /** free-text search filter, or null for no restriction */
+  query?: string | null;
+  /** Never chain the git→cache refill — the search view is a pure
+   *  re-query of already-cached commits, and its windowDays=null bypass
+   *  must not trigger a full no-window scan of every repo. */
+  skipRefill?: boolean;
 }
 
 export interface TimelineWindowState {
@@ -118,7 +124,8 @@ interface WindowRef {
 export function useTimelineWindow(
   params: TimelineWindowParams,
 ): TimelineWindowState {
-  const { repoIds, authors, windowDays, refreshNonce } = params;
+  const { repoIds, authors, windowDays, refreshNonce, skipRefill } = params;
+  const query = params.query ?? null;
 
   const [rows, setRows] = useState<CommitSummary[]>([]);
   const [baseIndex, setBaseIndex] = useState(0);
@@ -398,6 +405,7 @@ export function useTimelineWindow(
           authors: p.authors,
           since,
           viewGeneration: generation,
+          query: p.query ?? null,
         };
         const cnt = await countCommits(filter);
         if (qid !== queryRef.current) return { applied: false, qid };
@@ -547,8 +555,14 @@ export function useTimelineWindow(
   // changed time window. A repo / author chip change is a pure re-query of
   // the already-cached commits, so it skips the refill. The refill (and its
   // quiet in-place re-pull) is sequenced strictly AFTER the primary reload.
-  const filterKey = JSON.stringify([repoIds, authors, windowDays, refreshNonce]);
-  const filtersKey = JSON.stringify([repoIds, authors, windowDays]);
+  const filterKey = JSON.stringify([
+    repoIds,
+    authors,
+    windowDays,
+    refreshNonce,
+    query,
+  ]);
+  const filtersKey = JSON.stringify([repoIds, authors, windowDays, query]);
   const reloadKeyRef = useRef<{
     filtersKey: string;
     windowDays: number | null;
@@ -560,9 +574,10 @@ export function useTimelineWindow(
     const prev = reloadKeyRef.current;
     const filtersChanged = !isInitial && filtersKey !== prev.filtersKey;
     const needsRefill =
-      isInitial ||
-      windowDays !== prev.windowDays ||
-      refreshNonce !== prev.refreshNonce;
+      !skipRefill &&
+      (isInitial ||
+        windowDays !== prev.windowDays ||
+        refreshNonce !== prev.refreshNonce);
     reloadKeyRef.current = { filtersKey, windowDays, refreshNonce };
 
     // A refreshNonce-only bump (filters unchanged) reloads in place with no
