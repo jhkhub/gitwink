@@ -32,6 +32,7 @@ import {
   onOrchestratorProgress,
   onPanelShown,
   onRepoDiscovered,
+  onUpdateIndicator,
   onUpdateNone,
   onUpdateShowModal,
   repoCommits,
@@ -39,6 +40,7 @@ import {
   setPanelSticky,
   setPinnedRepos as savePinnedRepos,
   updateGetState,
+  updateRefreshIndicator,
 } from "./lib/ipc";
 import {
   broadcastSettings,
@@ -255,8 +257,19 @@ function App() {
   const [updateModal, setUpdateModal] = useState<UpdateStatePayload | null>(
     null,
   );
+  // Available-update version (or null) for the passive header-icon badge —
+  // kept in sync with the tray dot via the `update://indicator` event.
+  const [updateVersion, setUpdateVersion] = useState<string | null>(null);
   // Transient "you're up to date" line after a manual check found nothing.
   const [upToDate, setUpToDate] = useState(false);
+
+  // Open the update modal from the header badge — same path as the tray
+  // "Update available" item.
+  const openUpdateModal = useCallback(() => {
+    void updateGetState()
+      .then((st) => setUpdateModal(st))
+      .catch(() => {});
+  }, []);
 
   const singleMode = selectedRepoPath != null;
 
@@ -269,6 +282,7 @@ function App() {
     let unShown: UnlistenFn | undefined;
     let unUpdateModal: UnlistenFn | undefined;
     let unUpdateNone: UnlistenFn | undefined;
+    let unUpdateIndicator: UnlistenFn | undefined;
 
     (async () => {
       try {
@@ -341,6 +355,14 @@ function App() {
         setUpToDate(true);
         window.setTimeout(() => setUpToDate(false), 3000);
       });
+      // Header badge: mirror the tray's "update available" indicator. Register
+      // the listener first, then ask the backend to re-emit the current gated
+      // indicator (respects skip / snooze) so a badge found before the panel
+      // mounted shows up without waiting for the next check.
+      unUpdateIndicator = await onUpdateIndicator((version) => {
+        if (mounted) setUpdateVersion(version);
+      });
+      void updateRefreshIndicator().catch(() => {});
 
       // Per-repo discovery: merge into allRepos so the repo chip
       // dropdown lights up as repos are validated. Refresh cached
@@ -404,6 +426,7 @@ function App() {
       unShown?.();
       unUpdateModal?.();
       unUpdateNone?.();
+      unUpdateIndicator?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -936,13 +959,31 @@ function App() {
           });
         }}
       >
-        <img
-          src="/icon.png"
-          alt="gitwink"
-          title="gitwink"
-          className="panel-header-icon"
-          draggable={false}
-        />
+        <div
+          className={
+            "panel-header-iconwrap" + (updateVersion ? " has-update" : "")
+          }
+          title={
+            updateVersion
+              ? `Update available — v${updateVersion} · click to update`
+              : "gitwink"
+          }
+          role={updateVersion ? "button" : undefined}
+          onClick={updateVersion ? openUpdateModal : undefined}
+          {...(updateVersion ? { "data-no-drag": true } : {})}
+        >
+          <img
+            src="/icon.png"
+            alt="gitwink"
+            className="panel-header-icon"
+            draggable={false}
+          />
+          {updateVersion && (
+            <span className="panel-header-update-badge" aria-hidden="true">
+              !
+            </span>
+          )}
+        </div>
         <div className="header-chips">
           {warpReturn && !searchOpen && (
             <button
@@ -983,7 +1024,7 @@ function App() {
           />
           {singleMode && (
             <span
-              className={searching ? "chip-dimmed" : undefined}
+              className={"chip-slot" + (searching ? " chip-dimmed" : "")}
               title={searching ? "Not applied while searching" : undefined}
             >
               <BranchChip
@@ -992,6 +1033,7 @@ function App() {
                   setOpenChip(openChip === "branch" ? null : "branch")
                 }
                 onClose={() => setOpenChip(null)}
+                repoPath={selectedRepoPath ?? ""}
                 branches={branches}
                 selected={selectedBranches}
                 onChange={handleBranchChange}
@@ -1005,7 +1047,7 @@ function App() {
               bypasses them (dimmed to say so). The repo scope above
               stays live. */}
           <span
-            className={searching ? "chip-dimmed" : undefined}
+            className={"chip-slot" + (searching ? " chip-dimmed" : "")}
             title={searching ? "Not applied while searching" : undefined}
           >
             <TimeRangeChip
@@ -1017,7 +1059,7 @@ function App() {
             />
           </span>
           <span
-            className={searching ? "chip-dimmed" : undefined}
+            className={"chip-slot" + (searching ? " chip-dimmed" : "")}
             title={searching ? "Not applied while searching" : undefined}
           >
             <AuthorsChip

@@ -10,6 +10,23 @@ import { chipRowH, useUiScale } from "../lib/settings";
 const ITEM_H_BASE = 26; // .chip-item — one-line author entry
 const EMPTY_H_BASE = 34; // .chip-empty — "No authors match."
 
+// Author list ordering. With "all repo / all branch" the author list can be
+// large, so the order is user-controllable and persisted.
+type AuthorSort = "count" | "name" | "recent";
+const SORT_KEY = "gitwink.authorSort";
+function loadAuthorSort(): AuthorSort {
+  if (typeof window === "undefined") return "count";
+  const v = window.localStorage.getItem(SORT_KEY);
+  return v === "name" || v === "recent" ? v : "count";
+}
+const SORT_OPTIONS: { value: AuthorSort; label: string; title: string }[] = [
+  { value: "count", label: "Count", title: "Most commits first" },
+  { value: "name", label: "A–Z", title: "Alphabetical" },
+  { value: "recent", label: "Recent", title: "Most recent activity first" },
+];
+const byName = (a: AuthorTally, b: AuthorTally) =>
+  a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+
 interface Props {
   open: boolean;
   onToggle: () => void;
@@ -28,17 +45,34 @@ export function AuthorsChip({
   onChange,
 }: Props) {
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState<AuthorSort>(loadAuthorSort);
   const scale = useUiScale();
 
   useEffect(() => {
     if (!open) setQuery("");
   }, [open]);
 
-  const filtered = useMemo(() => {
+  function changeSort(next: AuthorSort) {
+    setSort(next);
+    try {
+      window.localStorage.setItem(SORT_KEY, next);
+    } catch {}
+  }
+
+  const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return authors;
-    return authors.filter((a) => a.name.toLowerCase().includes(q));
-  }, [authors, query]);
+    const list = q
+      ? authors.filter((a) => a.name.toLowerCase().includes(q))
+      : authors.slice();
+    const cmp =
+      sort === "name"
+        ? byName
+        : sort === "recent"
+          ? (a: AuthorTally, b: AuthorTally) => b.lastActivity - a.lastActivity
+          : (a: AuthorTally, b: AuthorTally) =>
+              b.count - a.count || byName(a, b);
+    return list.sort(cmp);
+  }, [authors, query, sort]);
 
   const label =
     selected === "all"
@@ -52,9 +86,11 @@ export function AuthorsChip({
   const toggle = useCallback(
     (name: string) => {
       if (selected === "all") {
-        // Switching from "all" to specific selection.
-        const others = authors.map((a) => a.name).filter((n) => n !== name);
-        onChange(others);
+        // From "all", clicking an author means "show only this one" — the
+        // same focus pattern BranchChip uses. (The old behaviour unchecked
+        // just this one from everybody, which turned isolating one author
+        // into a chore of unchecking the rest.)
+        onChange([name]);
         return;
       }
       const set = new Set(selected);
@@ -89,10 +125,12 @@ export function AuthorsChip({
         </button>
       ),
     });
-    for (const a of filtered) {
+    for (const a of visible) {
       const { name, count } = a;
+      // In "all" the top row carries the highlight; individual rows aren't
+      // pre-checked, so clicking one reads as "show only this author".
       const isSelected =
-        selected === "all" || (selected as string[]).includes(name);
+        selected !== "all" && (selected as string[]).includes(name);
       out.push({
         key: "author:" + name,
         height: ITEM_H,
@@ -104,12 +142,24 @@ export function AuthorsChip({
           >
             <span className="chip-check">{isSelected ? "✓" : ""}</span>
             <span className="chip-item-name">{name}</span>
+            <span
+              className="chip-only"
+              role="button"
+              tabIndex={-1}
+              title={`Show only ${name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onChange([name]);
+              }}
+            >
+              only
+            </span>
             <span className="chip-item-count">{count}</span>
           </button>
         ),
       });
     }
-    if (filtered.length === 0) {
+    if (visible.length === 0) {
       out.push({
         key: "__empty",
         height: EMPTY_H,
@@ -117,7 +167,7 @@ export function AuthorsChip({
       });
     }
     return out;
-  }, [filtered, selected, onChange, onClose, toggle, scale]);
+  }, [visible, selected, onChange, onClose, toggle, scale]);
 
   return (
     <ChipDropdown
@@ -136,7 +186,21 @@ export function AuthorsChip({
           placeholder="Search authors…"
         />
       </div>
-      <VirtualChipList rows={rows} resetKey={query} />
+      <div className="chip-sort" role="group" aria-label="Sort authors">
+        <span className="chip-sort-label">Sort</span>
+        {SORT_OPTIONS.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            className={"chip-sort-btn" + (sort === o.value ? " active" : "")}
+            title={o.title}
+            onClick={() => changeSort(o.value)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <VirtualChipList rows={rows} resetKey={query + ":" + sort} />
     </ChipDropdown>
   );
 }

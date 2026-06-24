@@ -73,11 +73,70 @@ body,
   -webkit-user-select: none;
 }
 
+/* App icon wrapper — anchors the update badge and becomes a click target
+   (open the update modal) when an update is waiting. */
+.panel-header-iconwrap {
+  position: relative;
+  flex-shrink: 0;
+  align-self: center;
+  display: inline-flex;
+  line-height: 0;
+}
+.panel-header-iconwrap.has-update {
+  cursor: pointer;
+}
+
+/* Passive "update available" badge — an orange ! at the icon's corner,
+   the in-panel twin of the tray dot. */
+.panel-header-update-badge {
+  position: absolute;
+  top: calc(-3px * var(--ui-scale, 1));
+  right: calc(-3px * var(--ui-scale, 1));
+  min-width: calc(11px * var(--ui-scale, 1));
+  height: calc(11px * var(--ui-scale, 1));
+  padding: 0 calc(2px * var(--ui-scale, 1));
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #f5a623;
+  color: #1a1300;
+  font-size: calc(8px * var(--ui-scale, 1));
+  font-weight: 800;
+  line-height: 1;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  pointer-events: none;
+}
+@media (prefers-color-scheme: dark) {
+  .panel-header-update-badge {
+    border-color: rgba(20, 20, 22, 0.9);
+  }
+}
+
 .header-chips {
   display: flex;
   align-items: center;
   gap: calc(4px * var(--ui-scale, 1));
-  flex-shrink: 0;
+  /* Shrink (but don't grow) so long repo / branch names truncate instead of
+     shoving the search / pin / close actions off the right edge. The
+     drag-handle to our right fills the slack when chips are short. */
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* Every chip slot may shrink below its content, so the labels (which
+   ellipsis inside .chip-label) give way before the pinned actions do.
+   Proportional flex-shrink means the long repo/branch chips absorb most of
+   it while the short time chip barely moves. */
+.header-chips > * {
+  min-width: 0;
+}
+/* Wrapper spans around the dimmable chips (branch / time / author): made
+   flex so the shrink propagates down to the chip button + its label. */
+.chip-slot {
+  display: flex;
+  min-width: 0;
 }
 
 /* Upstream ahead/behind badge in single-repo mode. Read-only — sits next
@@ -220,6 +279,11 @@ body,
 
 .chip-wrap {
   position: relative;
+  /* Flex so the chip button shrinks (and its label ellipsises) when the
+     header is tight. The dropdown is position:absolute, so it's out of flow
+     and unaffected — no overflow:hidden here, which would clip it. */
+  display: flex;
+  min-width: 0;
 }
 
 .chip {
@@ -236,12 +300,22 @@ body,
   cursor: pointer;
   user-select: none;
   white-space: nowrap;
-  /* Cap individual chip width so a long branch / repo name can't push
-   * the ✕ off the header. Full text stays available via the chip's
-   * title attribute. Scales with UI so wider text at high scale still
-   * fits proportionally. */
-  max-width: calc(160px * var(--ui-scale, 1));
+  /* Cap individual chip width so a long branch / repo name can't dominate
+   * the header. The flex-shrink chain truncates further when space is tight;
+   * full text stays available via the chip's title attribute. Scales with UI
+   * so wider text at high scale still fits proportionally. */
+  max-width: calc(190px * var(--ui-scale, 1));
   min-width: 0;
+}
+
+/* Single-repo mode priority: the repo is fixed context here, the branch is
+   the thing you're reading — so the repo chip stays compact and the branch
+   chip gets the room. (Both still shrink via flex when the panel narrows.) */
+.single-mode .chip-wrap[data-chip="repo"] .chip {
+  max-width: calc(130px * var(--ui-scale, 1));
+}
+.single-mode .chip-wrap[data-chip="branch"] .chip {
+  max-width: calc(260px * var(--ui-scale, 1));
 }
 
 .chip-label {
@@ -590,6 +664,7 @@ body,
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+  min-width: 0;
 }
 
 .chip-item-path {
@@ -606,6 +681,121 @@ body,
   font-variant-numeric: tabular-nums;
   font-size: calc(10px * var(--ui-scale, 1));
   opacity: 0.6;
+}
+
+/* BranchChip row tail: "last activity" age + lazily-loaded commit count,
+   grouped and right-aligned so the branch name truncates before them. */
+.chip-branch-tail {
+  margin-left: auto;
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: calc(8px * var(--ui-scale, 1));
+}
+.chip-branch-age {
+  font-size: calc(10px * var(--ui-scale, 1));
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.chip-branch-count {
+  font-size: calc(10px * var(--ui-scale, 1));
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  min-width: calc(30px * var(--ui-scale, 1));
+  text-align: right;
+}
+
+/* AuthorsChip "only" affordance — a hover-revealed pill to isolate one
+   author in a click, even from a multi-author selection. It reserves its
+   space (opacity, not display) so the count column never shifts on hover. */
+.chip-only {
+  margin-left: auto;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: calc(15px * var(--ui-scale, 1));
+  padding: 0 calc(5px * var(--ui-scale, 1));
+  font-size: calc(9px * var(--ui-scale, 1));
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 4px;
+  border: 1px solid rgba(80, 130, 240, 0.5);
+  color: rgba(80, 130, 240, 1);
+  opacity: 0;
+  cursor: pointer;
+}
+.chip-item:hover .chip-only {
+  opacity: 0.8;
+}
+.chip-only:hover {
+  opacity: 1;
+  background: rgba(80, 130, 240, 0.14);
+}
+.chip-only + .chip-item-count {
+  margin-left: 0;
+}
+@media (prefers-color-scheme: dark) {
+  .chip-only {
+    border-color: rgba(120, 160, 255, 0.5);
+    color: rgba(150, 185, 255, 1);
+  }
+  .chip-only:hover {
+    background: rgba(120, 160, 255, 0.18);
+  }
+}
+
+/* Sort segmented control inside the AuthorsChip dropdown. */
+.chip-sort {
+  display: flex;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  padding: calc(4px * var(--ui-scale, 1)) calc(10px * var(--ui-scale, 1));
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+.chip-sort-label {
+  font-size: calc(10px * var(--ui-scale, 1));
+  opacity: 0.5;
+  margin-right: calc(2px * var(--ui-scale, 1));
+}
+.chip-sort-btn {
+  font: inherit;
+  font-size: calc(10px * var(--ui-scale, 1));
+  line-height: 1;
+  padding: calc(2px * var(--ui-scale, 1)) calc(7px * var(--ui-scale, 1));
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.chip-sort-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  opacity: 1;
+}
+.chip-sort-btn.active {
+  background: rgba(80, 130, 240, 0.9);
+  border-color: rgba(80, 130, 240, 0.9);
+  color: #fff;
+  opacity: 1;
+}
+@media (prefers-color-scheme: dark) {
+  .chip-sort {
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+  }
+  .chip-sort-btn {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  .chip-sort-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .chip-sort-btn.active {
+    background: rgba(120, 160, 255, 0.9);
+    border-color: rgba(120, 160, 255, 0.9);
+    color: #0b0b0b;
+  }
 }
 
 /* RepoChip item title row — repo name + commit-count facet on one line,
@@ -1735,6 +1925,53 @@ body,
   }
 }
 
+/* Right-side header cluster: the context toggle + the scroll-sync button,
+   grouped so space-between keeps them together at the right edge. */
+.diff-header-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* Scroll-sync toggle — lit when the two columns scroll as one (default). */
+.diff-sync-btn {
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 9px;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+.diff-sync-btn:hover {
+  background: rgba(0, 0, 0, 0.05);
+  opacity: 1;
+}
+.diff-sync-btn.active {
+  background: rgba(80, 130, 240, 0.9);
+  border-color: rgba(80, 130, 240, 0.9);
+  color: #fff;
+  opacity: 1;
+}
+@media (prefers-color-scheme: dark) {
+  .diff-sync-btn {
+    border-color: rgba(255, 255, 255, 0.14);
+  }
+  .diff-sync-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+  .diff-sync-btn.active {
+    background: rgba(120, 160, 255, 0.9);
+    border-color: rgba(120, 160, 255, 0.9);
+    color: #0b0b0b;
+  }
+}
+
 .diff-body {
   flex: 1;
   display: flex;
@@ -1853,15 +2090,36 @@ body,
   /* Inline style overrides the columns with the persisted split; this is
      the fallback and defines the resizer's fixed middle track width. */
   grid-template-columns: 1fr 8px 1fr;
+  /* One viewport-height row so each column box stays the viewport height —
+     its taller content scrolls inside it (vertical), and its horizontal bar
+     pins to the viewport bottom rather than sinking below the content. */
+  grid-template-rows: minmax(0, 1fr);
   min-width: 0;
   height: 100%;
 }
 
+/* Each column is its own scroller. A per-column horizontal scrollbar forces
+   the vertical axis to scroll too (CSS computes overflow-y:visible to auto
+   when overflow-x isn't visible), so we hide the vertical bar — the overview
+   rail drives vertical and JS keeps the columns in vertical sync when locked
+   — while keeping a usable horizontal bar for long lines. */
 .sbs-col {
-  overflow-x: auto;
-  overflow-y: visible;
+  overflow: auto;
   min-width: 0;
   border-right: 1px solid rgba(0, 0, 0, 0.06);
+}
+.sbs-col::-webkit-scrollbar {
+  width: 0;
+  height: 10px;
+}
+.sbs-col::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 5px;
+}
+@media (prefers-color-scheme: dark) {
+  .sbs-col::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.22);
+  }
 }
 
 .sbs-col:last-child {
@@ -1895,6 +2153,120 @@ body,
   .sbs-resizer:hover,
   .sbs-resizer:active {
     background: rgba(140, 180, 255, 0.6);
+  }
+}
+
+/* Diff overview rail — colored marks at each change's position plus a
+   draggable viewport thumb. Sits to the right of the (scrollbar-hidden)
+   scroll container as the primary "jump to a change" affordance. */
+.sbs-minimap {
+  position: relative;
+  flex: none;
+  width: calc(14px * var(--ui-scale, 1));
+  align-self: stretch;
+  background: rgba(0, 0, 0, 0.03);
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+  cursor: pointer;
+  touch-action: none;
+}
+
+.sbs-minimap-mark {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  min-height: 2px;
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.sbs-minimap-mark.add {
+  background: rgba(80, 200, 120, 0.85);
+}
+.sbs-minimap-mark.delete {
+  background: rgba(220, 80, 80, 0.85);
+}
+.sbs-minimap-mark.change {
+  background: rgba(80, 130, 240, 0.85);
+}
+
+.sbs-minimap-thumb {
+  position: absolute;
+  left: 0;
+  right: 0;
+  min-height: calc(16px * var(--ui-scale, 1));
+  background: rgba(80, 130, 240, 0.16);
+  border: 1px solid rgba(80, 130, 240, 0.4);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.sbs-minimap:hover .sbs-minimap-thumb {
+  background: rgba(80, 130, 240, 0.26);
+}
+
+/* Unlocked mode: one thumb per side so you can see how far old/new have
+   drifted. Each takes half the rail width — aligned, they read as one bar;
+   drifted, they sit at different heights. */
+.sbs-minimap-thumb.dual {
+  min-height: calc(14px * var(--ui-scale, 1));
+}
+.sbs-minimap-thumb.dual.old {
+  left: 0;
+  right: 45%;
+  background: rgba(90, 130, 210, 0.22);
+  border-color: rgba(90, 130, 210, 0.55);
+}
+.sbs-minimap-thumb.dual.new {
+  left: 45%;
+  right: 0;
+  background: rgba(190, 140, 60, 0.22);
+  border-color: rgba(190, 140, 60, 0.6);
+}
+
+/* Re-align affordance — appears (unlocked + drifted) to snap new onto old.
+   Floats just left of the rail, over the top-right of the diff. */
+.sbs-minimap-realign {
+  position: absolute;
+  top: 4px;
+  right: calc(100% + 4px);
+  width: calc(20px * var(--ui-scale, 1));
+  height: calc(20px * var(--ui-scale, 1));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgba(90, 130, 210, 0.5);
+  border-radius: 5px;
+  background: rgba(245, 248, 255, 0.96);
+  color: rgba(60, 100, 190, 1);
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+.sbs-minimap-realign:hover {
+  background: rgba(230, 238, 255, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  .sbs-minimap {
+    background: rgba(255, 255, 255, 0.03);
+    border-left-color: rgba(255, 255, 255, 0.08);
+  }
+  .sbs-minimap-thumb {
+    background: rgba(140, 180, 255, 0.18);
+    border-color: rgba(140, 180, 255, 0.45);
+  }
+  .sbs-minimap:hover .sbs-minimap-thumb {
+    background: rgba(140, 180, 255, 0.28);
+  }
+  .sbs-minimap-realign {
+    background: rgba(30, 38, 55, 0.96);
+    color: rgba(150, 185, 255, 1);
+    border-color: rgba(120, 160, 240, 0.5);
+  }
+  .sbs-minimap-realign:hover {
+    background: rgba(45, 56, 80, 1);
   }
 }
 
@@ -2609,6 +2981,29 @@ body,
   white-space: nowrap;
 }
 
+.search-bar-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: calc(18px * var(--ui-scale, 1));
+  height: calc(18px * var(--ui-scale, 1));
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  opacity: 0.45;
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.search-bar-clear:hover {
+  opacity: 0.9;
+  background: rgba(0, 0, 0, 0.08);
+}
+
 .search-bar-hint {
   font-size: calc(11px * var(--ui-scale, 1));
   opacity: 0.4;
@@ -2619,6 +3014,9 @@ body,
 @media (prefers-color-scheme: dark) {
   .search-bar {
     border-bottom-color: rgba(255, 255, 255, 0.08);
+  }
+  .search-bar-clear:hover {
+    background: rgba(255, 255, 255, 0.12);
   }
 }
 

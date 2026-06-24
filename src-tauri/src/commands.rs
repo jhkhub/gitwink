@@ -298,6 +298,21 @@ pub async fn list_branches(repo_path: String) -> Result<Vec<git::BranchInfo>, St
     .map_err(|e| e.to_string())?
 }
 
+/// Lazily count reachable commits for the given branch refs — called by the
+/// BranchChip for the rows currently on screen so opening the chip in a
+/// thousand-branch repo stays instant.
+#[tauri::command]
+pub async fn count_branch_commits(
+    repo_path: String,
+    ref_names: Vec<String>,
+) -> Result<Vec<git::BranchCommitCount>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::count_branch_commits(Path::new(&repo_path), &ref_names).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub async fn current_upstream_status(
     repo_path: String,
@@ -1091,6 +1106,14 @@ pub fn update_skip(app: AppHandle) {
 #[tauri::command]
 pub fn update_snooze(app: AppHandle) {
     update::snooze(&app);
+}
+
+/// Re-emit the current (gated) update indicator. The panel calls this on
+/// mount so the header badge reflects skip / snooze / disabled state — the
+/// same gating as the tray dot — rather than the raw availability snapshot.
+#[tauri::command]
+pub fn update_refresh_indicator(app: AppHandle) {
+    update::refresh_indicator(&app);
 }
 
 #[tauri::command]

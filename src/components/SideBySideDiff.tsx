@@ -3,12 +3,17 @@ import type { Highlighter } from "shiki";
 
 import { parseDiff, type DiffSide } from "../lib/diff";
 import { getHighlighter, highlightLine, langForPath } from "../lib/highlight";
+import { DiffMinimap, type MinimapSegment } from "./DiffMinimap";
 
 interface Props {
   text: string;
   /** File path so we can detect the language for Shiki. Optional — falls
    * back to plain monospace when missing or unknown. */
   filePath?: string;
+  /** When true, the two columns scroll vertically as one (default). When
+   * false they scroll independently — the overview rail then shows both
+   * viewports and offers a re-align. */
+  locked: boolean;
 }
 
 function isDarkScheme(): boolean {
@@ -34,7 +39,7 @@ function saveSplit(v: number): void {
   } catch {}
 }
 
-export function SideBySideDiff({ text, filePath }: Props) {
+export function SideBySideDiff({ text, filePath, locked }: Props) {
   // Memoized: dragging the splitter calls setSplit on every pointer move,
   // which re-renders — without this, the whole diff would reparse each frame.
   const { hunks } = useMemo(() => parseDiff(text), [text]);
@@ -42,6 +47,51 @@ export function SideBySideDiff({ text, filePath }: Props) {
   const rightRef = useRef<HTMLDivElement | null>(null);
   const colsRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
+
+  // Overview-rail marks. Positions are fractions of the total visual-row
+  // count (each hunk = 1 header row + its line rows). Consecutive changed
+  // rows of the same kind coalesce into one bar so a 200-line block shows as
+  // a single tall mark, not 200 hairlines. Row-fraction (rather than measured
+  // pixels) is cheap and accurate enough to locate a change — exact in "Full"
+  // mode where there's a single hunk header.
+  const segments = useMemo<MinimapSegment[]>(() => {
+    const total = hunks.reduce((n, h) => n + 1 + h.rows.length, 0);
+    if (total === 0) return [];
+    const segs: MinimapSegment[] = [];
+    let cur: { start: number; end: number; type: MinimapSegment["type"] } | null =
+      null;
+    const flush = () => {
+      if (!cur) return;
+      segs.push({
+        topPct: (cur.start / total) * 100,
+        heightPct: ((cur.end - cur.start) / total) * 100,
+        type: cur.type,
+      });
+      cur = null;
+    };
+    let idx = 0;
+    for (const h of hunks) {
+      idx++; // hunk header occupies one visual row
+      for (const r of h.rows) {
+        const hasDel = r.left.type === "delete";
+        const hasAdd = r.right.type === "add";
+        if (hasDel || hasAdd) {
+          const t: MinimapSegment["type"] =
+            hasDel && hasAdd ? "change" : hasAdd ? "add" : "delete";
+          if (cur && cur.end === idx && cur.type === t) cur.end = idx + 1;
+          else {
+            flush();
+            cur = { start: idx, end: idx + 1, type: t };
+          }
+        } else {
+          flush();
+        }
+        idx++;
+      }
+    }
+    flush();
+    return segs;
+  }, [hunks]);
 
   const [highlighter, setHighlighter] = useState<Highlighter | null>(null);
   const [dark, setDark] = useState(isDarkScheme);
@@ -74,32 +124,33 @@ export function SideBySideDiff({ text, filePath }: Props) {
     return () => mq.removeEventListener?.("change", onChange);
   }, []);
 
-  // Sync horizontal scroll between the two columns — GitHub / GitLens
-  // pattern.
+  // Sync scroll between the two columns — GitHub / GitLens pattern. Horizontal
+  // is always mirrored; vertical only when `locked` (the default), so locked
+  // mode reads as one synchronized side-by-side while unlocked lets each side
+  // roam. On (re)locking we snap the right column to the left so they realign
+  // immediately rather than waiting for the next scroll.
   useEffect(() => {
     const l = leftRef.current;
     const r = rightRef.current;
     if (!l || !r) return;
+    if (locked) r.scrollTop = l.scrollTop;
     let syncing = false;
-    function onL() {
+    function mirror(src: HTMLDivElement, dst: HTMLDivElement) {
       if (syncing) return;
       syncing = true;
-      r!.scrollLeft = l!.scrollLeft;
+      dst.scrollLeft = src.scrollLeft;
+      if (locked) dst.scrollTop = src.scrollTop;
       syncing = false;
     }
-    function onR() {
-      if (syncing) return;
-      syncing = true;
-      l!.scrollLeft = r!.scrollLeft;
-      syncing = false;
-    }
-    l.addEventListener("scroll", onL);
-    r.addEventListener("scroll", onR);
+    const onL = () => mirror(l, r);
+    const onR = () => mirror(r, l);
+    l.addEventListener("scroll", onL, { passive: true });
+    r.addEventListener("scroll", onR, { passive: true });
     return () => {
       l.removeEventListener("scroll", onL);
       r.removeEventListener("scroll", onR);
     };
-  }, [hunks.length]);
+  }, [hunks.length, locked]);
 
   // Column resizer — drag the divider to rebalance old vs new, double-click
   // to reset to 50/50. Pointer capture keeps the drag alive past the thin
@@ -195,6 +246,14 @@ export function SideBySideDiff({ text, filePath }: Props) {
           </div>
         </div>
       </div>
+      {segments.length > 0 && (
+        <DiffMinimap
+          segments={segments}
+          leftRef={leftRef}
+          rightRef={rightRef}
+          locked={locked}
+        />
+      )}
     </div>
   );
 }

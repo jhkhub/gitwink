@@ -85,8 +85,17 @@ export interface BranchInfo {
   kind: "local" | "remote";
   tipHash: string;
   isHead: boolean;
-  commitCount: number;
+  /** Reachable-commit count, or null when not yet computed. The branch list
+   * loads with this null (counting is a per-branch history walk); the
+   * BranchChip fills it in lazily for visible rows via countBranchCommits. */
+  commitCount: number | null;
   lastActivity: number;
+}
+
+/** Lazily-computed reachable-commit count for one branch ref. */
+export interface BranchCommitCount {
+  refName: string;
+  count: number;
 }
 
 /** Snapshot of the current branch's relation to its upstream remote-tracking

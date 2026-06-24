@@ -96,7 +96,11 @@ pub struct BranchInfo {
     pub kind: String,
     pub tip_hash: String,
     pub is_head: bool,
-    pub commit_count: usize,
+    /// Reachable-commit count, or `None` when not yet computed. The cheap
+    /// `list_branches` path leaves this null (counting is a per-branch
+    /// history walk); the frontend fills it in lazily for visible rows via
+    /// `count_branch_commits`.
+    pub commit_count: Option<u32>,
     /// Unix seconds of the tip commit, for "recent activity" sort.
     pub last_activity: i64,
 }
@@ -539,35 +543,41 @@ pub fn file_diff(
 const LOCAL_REF_COUNT_CAP: usize = 5_000;
 const REMOTE_REF_COUNT_CAP: usize = 500;
 
-fn ref_count_and_activity(repo: &Repository, tip: Oid, cap: usize) -> (usize, i64) {
-    let mut count = 0usize;
-    let mut last_activity: i64 = 0;
+/// Count commits reachable from `tip`, capped. Bounds a single branch's
+/// walk; `cap + 1` is returned as the "more than cap" sentinel so the UI can
+/// render e.g. "5000+".
+fn ref_commit_count(repo: &Repository, tip: Oid, cap: usize) -> u32 {
+    let mut count = 0u32;
     if let Ok(mut rw) = repo.revwalk() {
         // libgit2: set_sorting MUST be called before any push/hide.
         let _ = rw.set_sorting(Sort::TIME);
         if rw.push(tip).is_ok() {
             for (i, oid_res) in rw.enumerate() {
-                let Ok(oid) = oid_res else { continue };
-                count = i + 1;
-                if i == 0 {
-                    if let Ok(c) = repo.find_commit(oid) {
-                        last_activity = c.time().seconds();
-                    }
+                if oid_res.is_err() {
+                    continue;
                 }
+                count = (i + 1) as u32;
                 if i >= cap {
-                    count = cap + 1;
+                    count = (cap + 1) as u32;
                     break;
                 }
             }
         }
     }
-    (count, last_activity)
+    count
 }
 
 /// Return every local branch AND every remote-tracking ref in the repo.
 /// Remote refs come from `refs/remotes/*`, skipping any `*/HEAD` symbolic
 /// alias. Both share the same `BranchInfo` shape, with `kind` set so the
 /// frontend can render them in separate sections.
+///
+/// CHEAP path: per branch we only peel the tip to its commit for the "last
+/// activity" timestamp (O(1)). Reachable-commit COUNTS are deliberately
+/// omitted (`commit_count: None`) — counting is a per-branch history walk,
+/// so a repo with thousands of branches would otherwise pay
+/// O(branches × history) just to open the chip. The frontend fills counts in
+/// lazily for the rows actually on screen via `count_branch_commits`.
 pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
     let repo = Repository::open(repo_path)
         .with_context(|| format!("open repo {}", repo_path.display()))?;
@@ -580,6 +590,13 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
             .and_then(|h| h.shorthand().map(|s| s.to_string()))
     };
 
+    // Tip → commit time. Cheap: loads one commit object, no walk.
+    let tip_time = |tip: Oid| -> i64 {
+        repo.find_commit(tip)
+            .map(|c| c.time().seconds())
+            .unwrap_or(0)
+    };
+
     let mut out: Vec<BranchInfo> = Vec::new();
 
     // Local heads first.
@@ -589,16 +606,14 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
                 continue;
             };
             let Some(tip) = r.target() else { continue };
-            let (count, last_activity) =
-                ref_count_and_activity(&repo, tip, LOCAL_REF_COUNT_CAP);
             out.push(BranchInfo {
                 name: name.clone(),
                 ref_name: format!("refs/heads/{name}"),
                 kind: "local".to_string(),
                 tip_hash: tip.to_string(),
                 is_head: Some(&name) == head_branch.as_ref(),
-                commit_count: count,
-                last_activity,
+                commit_count: None,
+                last_activity: tip_time(tip),
             });
         }
     }
@@ -614,16 +629,14 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
                 continue;
             }
             let Some(tip) = r.target() else { continue };
-            let (count, last_activity) =
-                ref_count_and_activity(&repo, tip, REMOTE_REF_COUNT_CAP);
             out.push(BranchInfo {
                 name: name.clone(),
                 ref_name: format!("refs/remotes/{name}"),
                 kind: "remote".to_string(),
                 tip_hash: tip.to_string(),
                 is_head: false,
-                commit_count: count,
-                last_activity,
+                commit_count: None,
+                last_activity: tip_time(tip),
             });
         }
     }
@@ -631,6 +644,45 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<BranchInfo>> {
     // Sort by recency overall; UI groups by `kind` so this just controls
     // intra-group ordering.
     out.sort_by(|a, b| b.last_activity.cmp(&a.last_activity));
+    Ok(out)
+}
+
+/// Lazily-computed reachable-commit count for one branch ref. The frontend
+/// requests these for the BranchChip rows currently on screen, so we never
+/// walk a branch the user doesn't look at.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchCommitCount {
+    pub ref_name: String,
+    pub count: u32,
+}
+
+/// Count reachable commits for each given branch ref (local or
+/// remote-tracking), capping per ref by kind. Unresolvable refs are skipped.
+pub fn count_branch_commits(
+    repo_path: &Path,
+    ref_names: &[String],
+) -> Result<Vec<BranchCommitCount>> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("open repo {}", repo_path.display()))?;
+    let mut out = Vec::with_capacity(ref_names.len());
+    for ref_name in ref_names {
+        let cap = if ref_name.starts_with("refs/remotes/") {
+            REMOTE_REF_COUNT_CAP
+        } else {
+            LOCAL_REF_COUNT_CAP
+        };
+        let Ok(reference) = repo.find_reference(ref_name) else {
+            continue;
+        };
+        let Some(tip) = reference.target() else {
+            continue;
+        };
+        out.push(BranchCommitCount {
+            ref_name: ref_name.clone(),
+            count: ref_commit_count(&repo, tip, cap),
+        });
+    }
     Ok(out)
 }
 

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { countBranchCommits } from "../lib/ipc";
+import { chipRowH, useUiScale } from "../lib/settings";
+import { compactAge, fullDateTime } from "../lib/time";
 import type { BranchInfo } from "../types";
 import { ChipDropdown } from "./ChipDropdown";
 import { VirtualChipList, type VirtualChipRow } from "./VirtualChipList";
-import { chipRowH, useUiScale } from "../lib/settings";
 
 // Virtualised-row BASE heights (px) at scale 1.0 — chipRowH scales them
 // against the current --ui-scale so JS row heights match the CSS content.
@@ -11,10 +13,26 @@ const ITEM_H_BASE = 26; // .chip-item — one-line branch entry
 const HEADER_H_BASE = 25; // .chip-section-header — "Local" / "Remote tracking"
 const EMPTY_H_BASE = 34; // .chip-empty — "No branches match."
 
+// Mirror of the backend revwalk caps (git.rs) — a returned count above the
+// cap is the "more than" sentinel (cap + 1), rendered as e.g. "5,000+".
+const LOCAL_COUNT_CAP = 5_000;
+const REMOTE_COUNT_CAP = 500;
+
+/** Lazy commit-count label for a branch row: "…" until its count loads,
+ * then the number (or "<cap>+" when the walk hit the cap). */
+function countLabel(b: BranchInfo, counts: Map<string, number>): string {
+  const c = counts.get(b.refName);
+  if (c == null) return "…";
+  const cap = b.kind === "remote" ? REMOTE_COUNT_CAP : LOCAL_COUNT_CAP;
+  return c > cap ? `${cap.toLocaleString()}+` : c.toLocaleString();
+}
+
 interface Props {
   open: boolean;
   onToggle: () => void;
   onClose: () => void;
+  /** Repo the branches belong to — needed to lazily count commits per ref. */
+  repoPath: string;
   branches: BranchInfo[];
   /** Array of refNames (e.g. "refs/heads/main", "refs/remotes/origin/main")
    * or the "all" sentinel. We key by refName so a local "main" and a
@@ -27,6 +45,7 @@ export function BranchChip({
   open,
   onToggle,
   onClose,
+  repoPath,
   branches,
   selected,
   onChange,
@@ -37,6 +56,78 @@ export function BranchChip({
   useEffect(() => {
     if (!open) setQuery("");
   }, [open]);
+
+  // ----- lazy per-branch commit counts -----
+  // The branch list loads instantly with no counts (counting is a per-branch
+  // history walk). We fetch counts only for the rows VirtualChipList reports
+  // as on-screen, deduped + debounced into one IPC call per batch.
+  const [counts, setCounts] = useState<Map<string, number>>(new Map());
+  const requestedRef = useRef<Set<string>>(new Set());
+  const pendingRef = useRef<Set<string>>(new Set());
+  const flushTimerRef = useRef<number | null>(null);
+
+  // A different repo's refs/counts no longer apply — start clean.
+  useEffect(() => {
+    setCounts(new Map());
+    requestedRef.current = new Set();
+    pendingRef.current = new Set();
+  }, [repoPath]);
+
+  const flush = useCallback(() => {
+    flushTimerRef.current = null;
+    const refs = Array.from(pendingRef.current);
+    pendingRef.current = new Set();
+    if (refs.length === 0) return;
+    void countBranchCommits(repoPath, refs)
+      .then((res) => {
+        if (res.length === 0) return;
+        setCounts((prev) => {
+          const next = new Map(prev);
+          for (const { refName, count } of res) next.set(refName, count);
+          return next;
+        });
+      })
+      .catch(() => {
+        // Let a later visibility pass retry these refs.
+        for (const r of refs) requestedRef.current.delete(r);
+      });
+  }, [repoPath]);
+
+  const requestCounts = useCallback(
+    (refNames: string[]) => {
+      let added = false;
+      for (const refName of refNames) {
+        if (requestedRef.current.has(refName)) continue;
+        requestedRef.current.add(refName);
+        pendingRef.current.add(refName);
+        added = true;
+      }
+      if (added && flushTimerRef.current == null) {
+        flushTimerRef.current = window.setTimeout(flush, 80);
+      }
+    },
+    [flush],
+  );
+
+  useEffect(
+    () => () => {
+      if (flushTimerRef.current != null) window.clearTimeout(flushTimerRef.current);
+    },
+    [],
+  );
+
+  // VirtualChipList reports the keys it has mounted; pull branch refs out and
+  // queue their counts. Header/"all" rows are ignored.
+  const onVisibleKeys = useCallback(
+    (keys: string[]) => {
+      const refs: string[] = [];
+      for (const k of keys) {
+        if (k.startsWith("branch:")) refs.push(k.slice("branch:".length));
+      }
+      if (refs.length > 0) requestCounts(refs);
+    },
+    [requestCounts],
+  );
 
   // Snapshot of `selected` taken when the dropdown opens. The list order
   // is frozen against this — toggling a ✓ while the dropdown is open
@@ -130,7 +221,17 @@ export function BranchChip({
               {b.name}
               {b.isHead && <span className="chip-item-head"> · HEAD</span>}
             </span>
-            <span className="chip-item-count">{b.commitCount}</span>
+            <span className="chip-branch-tail">
+              <span
+                className="chip-branch-age"
+                title={`Last activity: ${fullDateTime(b.lastActivity)}`}
+              >
+                {compactAge(b.lastActivity)}
+              </span>
+              <span className="chip-branch-count" title="Reachable commits">
+                {countLabel(b, counts)}
+              </span>
+            </span>
           </button>
         ),
       };
@@ -184,7 +285,16 @@ export function BranchChip({
       });
     }
     return out;
-  }, [localBranches, remoteBranches, selected, onChange, onClose, toggle, scale]);
+  }, [
+    localBranches,
+    remoteBranches,
+    selected,
+    onChange,
+    onClose,
+    toggle,
+    scale,
+    counts,
+  ]);
 
   return (
     <ChipDropdown
@@ -202,7 +312,11 @@ export function BranchChip({
           placeholder="Search branches…"
         />
       </div>
-      <VirtualChipList rows={rows} resetKey={query} />
+      <VirtualChipList
+        rows={rows}
+        resetKey={query}
+        onVisibleKeys={onVisibleKeys}
+      />
     </ChipDropdown>
   );
 }

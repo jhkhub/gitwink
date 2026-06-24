@@ -75,7 +75,12 @@ pub fn installed_via_msix() -> bool {
 /// The `update_check` mode is re-read each iteration so a `settings.json`
 /// edit takes effect without a restart.
 pub fn start(app: AppHandle) {
-    if installed_via_scoop() || installed_via_msix() {
+    // MSIX (Microsoft Store) updates are owned by the Store, not the
+    // GitHub-releases updater, so the check loop skips MSIX. Scoop installs
+    // DO run it: detection uses the same `latest.json`, so a Scoop user still
+    // gets the badge; only the install action differs (the modal routes Scoop
+    // to `scoop update gitwink`).
+    if installed_via_msix() {
         return;
     }
     std::thread::spawn(move || loop {
@@ -106,7 +111,7 @@ pub fn clear_cached_available(app: &AppHandle) {
 /// user toggles update_check to Enabled without waiting up to 24h for
 /// the background loop's next tick (GPT Pro review E1).
 pub fn check_now_background(app: &AppHandle) {
-    if installed_via_scoop() || installed_via_msix() {
+    if installed_via_msix() {
         return;
     }
     let app = app.clone();
@@ -118,13 +123,12 @@ pub fn check_now_background(app: &AppHandle) {
 }
 
 /// Tray "Check for updates" entry point. Surfaces the modal on a hit
-/// regardless of skip/snooze state — the user explicitly asked.
+/// regardless of skip/snooze state — the user explicitly asked. Scoop runs
+/// a real check now (same `latest.json`); on a hit the modal shows its Scoop
+/// branch (the `scoop update` hint) rather than an in-app install button.
 pub fn manual_check(app: &AppHandle) {
-    if installed_via_scoop() {
-        // No real check for Scoop installs — just point the user at the
-        // right command via the modal's Scoop branch.
-        window::show_panel(app);
-        let _ = app.emit("update://show-modal", ());
+    if installed_via_msix() {
+        // Store-managed — no GitHub-releases check here.
         return;
     }
     if settings::load(app).update_check == UpdateCheckMode::Disabled {
@@ -186,6 +190,10 @@ pub fn refresh_indicator(app: &AppHandle) {
             (!skipped && !snoozed).then(|| u.version.clone())
         })
     };
+    // Mirror the indicator to the panel so the header icon can badge it —
+    // same gating as the tray dot (hidden when skipped / snoozed / disabled).
+    // Payload is the version string, or null when there's nothing to show.
+    let _ = app.emit("update://indicator", version.clone());
     tray::set_update_indicator(app, version);
 }
 

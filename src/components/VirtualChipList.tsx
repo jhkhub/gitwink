@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -30,6 +31,10 @@ interface Props {
   /** Changing this resets the scroll to the top — pass the search query
    * so filtering jumps back to the first match. */
   resetKey?: string;
+  /** Called with the keys of the rows currently mounted (visible + overscan)
+   * whenever that set changes — lets a caller lazily load data for just the
+   * rows on screen (e.g. BranchChip's per-branch commit counts). */
+  onVisibleKeys?: (keys: string[]) => void;
 }
 
 /** Fixed-row-height DOM virtualisation for the filter-chip dropdowns.
@@ -41,6 +46,7 @@ export function VirtualChipList({
   maxHeight = 280,
   overscan = 4,
   resetKey,
+  onVisibleKeys,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -85,26 +91,37 @@ export function VirtualChipList({
     return ans;
   };
 
-  const visible: ReactNode[] = [];
+  let first = 0;
+  let last = -1;
   if (rows.length > 0) {
-    const first = Math.max(0, rowAt(scrollTop) - overscan);
-    const last = Math.min(
-      rows.length - 1,
-      rowAt(scrollTop + viewportH) + overscan,
-    );
-    for (let i = first; i <= last; i++) {
-      const row = rows[i];
-      visible.push(
-        <div
-          key={row.key}
-          className="chip-vrow"
-          style={{ top: offsets[i], height: row.height }}
-        >
-          {row.render()}
-        </div>,
-      );
-    }
+    first = Math.max(0, rowAt(scrollTop) - overscan);
+    last = Math.min(rows.length - 1, rowAt(scrollTop + viewportH) + overscan);
   }
+
+  const visible: ReactNode[] = [];
+  for (let i = first; i <= last; i++) {
+    const row = rows[i];
+    visible.push(
+      <div
+        key={row.key}
+        className="chip-vrow"
+        style={{ top: offsets[i], height: row.height }}
+      >
+        {row.render()}
+      </div>,
+    );
+  }
+
+  // Report the mounted row keys so a caller can lazy-load per-row data. Held
+  // in a ref so a changing callback identity doesn't re-fire the effect.
+  const onVisibleKeysRef = useRef(onVisibleKeys);
+  onVisibleKeysRef.current = onVisibleKeys;
+  useEffect(() => {
+    if (!onVisibleKeysRef.current) return;
+    const keys: string[] = [];
+    for (let i = first; i <= last; i++) keys.push(rows[i].key);
+    onVisibleKeysRef.current(keys);
+  }, [first, last, rows]);
 
   return (
     <div

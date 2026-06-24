@@ -58,6 +58,15 @@ const CONTEXT_OPTIONS: { value: number; label: string; title: string }[] = [
   },
 ];
 
+/** Vertical scroll lock for the side-by-side view. Locked (default) scrolls
+ * both columns as one; unlocked lets the old/new sides roam independently.
+ * Persisted so the choice sticks across files and sessions. */
+const SCROLL_LOCK_KEY = "gitwink.diffScrollLock";
+function loadScrollLock(): boolean {
+  if (typeof window === "undefined") return true;
+  return window.localStorage.getItem(SCROLL_LOCK_KEY) !== "0";
+}
+
 export function DiffApp() {
   const [ctx, setCtx] = useState<DiffOpenPayload | null>(null);
   const [files, setFiles] = useState<ChangedFile[]>([]);
@@ -75,6 +84,17 @@ export function DiffApp() {
     y: number;
     items: MenuItem[];
   } | null>(null);
+  const [scrollLocked, setScrollLocked] = useState(loadScrollLock);
+
+  function toggleScrollLock() {
+    setScrollLocked((v) => {
+      const next = !v;
+      try {
+        window.localStorage.setItem(SCROLL_LOCK_KEY, next ? "1" : "0");
+      } catch {}
+      return next;
+    });
+  }
 
   useEffect(() => {
     let un: UnlistenFn | undefined;
@@ -292,29 +312,47 @@ export function DiffApp() {
           </div>
         </div>
         {selectedFile && !isImage && !isBinary && (
-          <div
-            className="diff-context-toggle"
-            role="group"
-            aria-label="Diff context"
-          >
-            {CONTEXT_OPTIONS.map((o) => {
-              const disabled = o.value === WHOLE_FILE_CONTEXT && isFullTooBig;
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  className={
-                    "diff-context-btn" +
-                    (effectiveContext === o.value ? " active" : "")
-                  }
-                  disabled={disabled}
-                  onClick={() => setContext(o.value)}
-                  title={disabled ? "File too large for full context" : o.title}
-                >
-                  {o.label}
-                </button>
-              );
-            })}
+          <div className="diff-header-tools">
+            <div
+              className="diff-context-toggle"
+              role="group"
+              aria-label="Diff context"
+            >
+              {CONTEXT_OPTIONS.map((o) => {
+                const disabled =
+                  o.value === WHOLE_FILE_CONTEXT && isFullTooBig;
+                return (
+                  <button
+                    key={o.value}
+                    type="button"
+                    className={
+                      "diff-context-btn" +
+                      (effectiveContext === o.value ? " active" : "")
+                    }
+                    disabled={disabled}
+                    onClick={() => setContext(o.value)}
+                    title={
+                      disabled ? "File too large for full context" : o.title
+                    }
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              className={"diff-sync-btn" + (scrollLocked ? " active" : "")}
+              onClick={toggleScrollLock}
+              aria-pressed={scrollLocked}
+              title={
+                scrollLocked
+                  ? "Scroll sync on — old & new move together. Click to unlock for independent scroll."
+                  : "Scroll sync off — sides scroll independently. Click to lock."
+              }
+            >
+              ⇅ Sync
+            </button>
           </div>
         )}
       </header>
@@ -391,7 +429,11 @@ export function DiffApp() {
           ) : diffText == null ? (
             <div className="diff-loading">Loading diff…</div>
           ) : (
-            <SideBySideDiff text={diffText} filePath={selectedFile} />
+            <SideBySideDiff
+              text={diffText}
+              filePath={selectedFile}
+              locked={scrollLocked}
+            />
           )}
         </main>
       </div>

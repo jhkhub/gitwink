@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type {
+  BranchCommitCount,
   BranchInfo,
   ChangedFile,
   CommitAround,
@@ -59,6 +60,19 @@ export async function refreshRecentCommits(
 
 export async function listBranches(repoPath: string): Promise<BranchInfo[]> {
   return invoke<BranchInfo[]>("list_branches", { repoPath });
+}
+
+/** Count reachable commits for the given branch refs (called lazily for the
+ * BranchChip rows currently on screen). Refs that can't be resolved are
+ * omitted from the result. */
+export async function countBranchCommits(
+  repoPath: string,
+  refNames: string[],
+): Promise<BranchCommitCount[]> {
+  return invoke<BranchCommitCount[]>("count_branch_commits", {
+    repoPath,
+    refNames,
+  });
 }
 
 export async function currentUpstreamStatus(
@@ -386,6 +400,12 @@ export async function updateSnooze(): Promise<void> {
   await invoke("update_snooze");
 }
 
+/** Ask the backend to re-emit the current (gated) update indicator — used on
+ * mount so the header badge respects skip / snooze, matching the tray dot. */
+export async function updateRefreshIndicator(): Promise<void> {
+  await invoke("update_refresh_indicator");
+}
+
 /** Backend asks the panel to open the update modal — fired by the tray
  * "Update available" item, a manual check that found a release, or a
  * manual check on a Scoop install. */
@@ -396,4 +416,13 @@ export async function onUpdateShowModal(cb: () => void): Promise<UnlistenFn> {
 /** A manual check found nothing — the panel shows a brief "up to date". */
 export async function onUpdateNone(cb: () => void): Promise<UnlistenFn> {
   return listen("update://none", () => cb());
+}
+
+/** Backend pushes the current update-available version (or null when there's
+ * nothing to show — skipped / snoozed / disabled / up to date) whenever the
+ * indicator state changes. Drives the header-icon update badge. */
+export async function onUpdateIndicator(
+  cb: (version: string | null) => void,
+): Promise<UnlistenFn> {
+  return listen<string | null>("update://indicator", (e) => cb(e.payload));
 }

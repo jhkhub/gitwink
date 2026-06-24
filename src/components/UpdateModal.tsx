@@ -16,17 +16,24 @@ export function UpdateModal({ state, onClose }: UpdateModalProps) {
 
   const update = state.available;
 
-  // Scoop installs: no in-app update path — point the user at the CLI.
+  // Scoop installs: no in-app update path — point the user at the CLI. The
+  // badge + version still show (detection is the same), only the action is a
+  // command rather than an in-app install.
   if (state.scoop) {
     return (
       <Backdrop onClose={onClose}>
         <header className="update-modal-header">
-          <span className="update-modal-title">Update gitwink</span>
+          <span className="update-modal-title">
+            {update ? "Update available" : "Update gitwink"}
+          </span>
+          {update && (
+            <span className="update-modal-version">v{update.version}</span>
+          )}
         </header>
         <div className="update-modal-changelog">
-          This copy of gitwink was installed with Scoop, which manages its
-          own updates. Run <code>scoop update gitwink</code> in a terminal
-          to get the latest version.
+          This copy of gitwink was installed with Scoop, which manages its own
+          updates. Run <code>scoop update gitwink</code> in a terminal to get{" "}
+          {update ? `v${update.version}` : "the latest version"}.
         </div>
         <div className="update-modal-actions">
           <button
