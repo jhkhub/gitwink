@@ -5,6 +5,39 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-06-24
+
+### Added
+
+- **Diff overview minimap + scroll-sync lock** — the side-by-side diff gets a
+  change-location rail (add/delete/replace marks; click or drag to jump). The
+  two sides scroll together by default; a ⇅ Sync toggle unlocks them to roam
+  independently, showing both viewports on the rail with a one-tap re-align.
+- **Author filter — focus & sort** — clicking an author now shows only that
+  one (matching the branch filter), a hover "only" isolates them from a
+  multi-pick, and a Count / A–Z / Recent sort tames the author list when
+  viewing all repos / all branches.
+- **Update available, in the panel** — an orange badge on the app icon when an
+  update is waiting; click it to review and install. Previously only the tray
+  surfaced updates. Scoop installs get the badge too (pointing you at
+  `scoop update gitwink`).
+
+### Changed
+
+- **The branch list opens instantly in repos with thousands of branches.**
+  gitwink no longer walks every branch's history up front to count commits —
+  each branch shows its last activity immediately, and commit counts load
+  lazily only for the rows you actually scroll past.
+
+### Fixed
+
+- **Long repo / branch names no longer push the header buttons off-screen.**
+  The filter chips truncate instead, and in single-repo mode the branch name
+  is given priority over the (fixed-context) repo name.
+- The commit-search bar now has a clear (×) button.
+- **Plain `Ctrl+C`** in an expanded commit copies just your selection, not the
+  whole AI-context bundle — that stays on its own dedicated button.
+
 ## [0.7.0] — 2026-06-12
 
 ### Added
