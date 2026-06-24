@@ -360,7 +360,15 @@ export function Timeline({
         const c = commits[selected];
         if (c) toggleExpand(c.hash);
         e.preventDefault();
-      } else if (e.key === "c" || e.key === "C") {
+      } else if (
+        (e.key === "c" || e.key === "C") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        // Bare `c` only — Ctrl/Cmd+C must fall through to the browser's
+        // native copy so a drag-selection copies normally. "Copy as AI
+        // context" keeps its own button + the unmodified `c` shortcut.
         const c = commits[selected];
         if (c) {
           void copyAiContext(c);
