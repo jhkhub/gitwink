@@ -27,8 +27,14 @@ use std::os::windows::process::CommandExt;
 /// Skip a repo's fetch if we fetched it within this window.
 pub const FETCH_COOLDOWN: Duration = Duration::from_secs(180);
 
-/// Hard cap on a single fetch — a hung network call is killed past this.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
+/// Last-resort backstop on a single fetch — NOT the normal bound. git's own
+/// http.lowSpeedLimit/lowSpeedTime (set below) aborts a genuinely STALLED
+/// HTTP(S) transfer in ~20s, so this only catches a non-HTTP hang (e.g. a
+/// wedged ssh). Kept generous so a slow-but-progressing LARGE fetch of a
+/// long-stale repo runs to completion instead of being killed mid-transfer —
+/// an atomic `git fetch` killed early lands nothing, which is exactly the
+/// stale-repo case auto-fetch exists for.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(150);
 
 /// Per-repo last-fetch timestamps so repeated summons don't spam the remote.
 /// Managed Tauri state; keyed by the repo path the frontend passes (the same
@@ -69,6 +75,12 @@ pub fn git_fetch_one_shot(repo: &Path) {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(repo)
+        // Abort only a STALLED transfer (HTTP/S): < 1 KB/s sustained for 20s.
+        // This lets a slow-but-progressing large fetch of a long-stale repo
+        // finish, instead of a fixed wall-clock kill cutting it off mid-pack
+        // (which would land nothing). SSH remotes ignore these and lean on the
+        // generous FETCH_TIMEOUT backstop.
+        .args(["-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=20"])
         .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"])
         // Non-interactive: never pop a credential prompt. GIT_TERMINAL_PROMPT
         // disables git's own TTY prompt; GIT_ASKPASS=echo makes any askpass
@@ -90,26 +102,38 @@ pub fn git_fetch_one_shot(repo: &Path) {
     cmd.creation_flags(0x0800_0000);
 
     if let Ok(child) = cmd.spawn() {
-        wait_with_timeout(child, FETCH_TIMEOUT);
+        if wait_with_timeout(child, FETCH_TIMEOUT) {
+            // Hit the backstop — a wedged/extremely-slow transfer the
+            // low-speed abort didn't catch (e.g. ssh). Logged, not surfaced:
+            // the fetch simply lands nothing this round and retries after the
+            // cooldown. This is the one path where a stale-repo fetch can
+            // silently bring nothing, so leave a breadcrumb for diagnosis.
+            eprintln!(
+                "gitwink: auto-fetch hit the {}s backstop for {} — transfer killed; nothing landed",
+                FETCH_TIMEOUT.as_secs(),
+                repo.display()
+            );
+        }
     }
 }
 
 /// Poll-wait for the child, killing it past `timeout`. `std::process` has no
 /// native timeout; a short poll loop avoids pulling in an async-process dep.
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) {
+/// Returns true iff the child was killed for exceeding `timeout`.
+fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return,
+            Ok(Some(_)) => return false,
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return;
+                    return true;
                 }
-                std::thread::sleep(Duration::from_millis(50));
+                std::thread::sleep(Duration::from_millis(100));
             }
-            Err(_) => return,
+            Err(_) => return false,
         }
     }
 }
