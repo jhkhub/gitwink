@@ -85,6 +85,14 @@ pub struct Settings {
     /// designed around).
     #[serde(default)]
     pub panel_pinned: Option<bool>,
+    /// One-shot `git fetch` of the currently-viewed single repo when the
+    /// panel is summoned, so a teammate's just-pushed commit surfaces. Shells
+    /// out to the system git (libgit2 has no network transport here); runs
+    /// async/non-blocking, non-interactive (silent on auth failure / no git /
+    /// no remote), per-repo cooldown, single-repo mode only. `None` ⇒ the ON
+    /// default (resolved in `get_settings`).
+    #[serde(default)]
+    pub auto_fetch_on_show: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
@@ -321,6 +329,14 @@ pub fn save_panel_hotkey(app: &AppHandle, spec: Option<String>) {
 /// see `set_panel_pinned` in commands.rs.
 pub fn save_panel_pinned(app: &AppHandle, pinned: bool) -> Result<()> {
     update_with(app, |s| s.panel_pinned = Some(pinned))
+}
+
+/// Persist the auto-fetch-on-show toggle. Updating the live cache is the
+/// caller's job — see `set_auto_fetch_on_show` in commands.rs.
+pub fn save_auto_fetch_on_show(app: &AppHandle, enabled: bool) {
+    if let Err(e) = update_with(app, |s| s.auto_fetch_on_show = Some(enabled)) {
+        eprintln!("settings: failed to persist auto_fetch_on_show: {e:#}");
+    }
 }
 
 /// Persist the self-update mode (`Enabled` / `Manual` / `Disabled`).

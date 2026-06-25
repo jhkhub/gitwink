@@ -38,8 +38,9 @@ pub struct CommitSummary {
     /// expansion. Empty string if libgit2 couldn't decode it.
     pub message: String,
     /// Remote-tracking ref shorthand (e.g. "origin/main") that points at
-    /// this exact commit. Local file read — we never call `git fetch`.
-    /// None when no remote ref points here. Kept separate from
+    /// this exact commit. Read from local refs (git.rs never fetches; refs
+    /// are refreshed by the user's IDE/CLI or the optional auto-fetch in
+    /// `fetch.rs`). None when no remote ref points here. Kept separate from
     /// `branch_label` because remote tip identity is "this commit IS the
     /// tip of origin/X", not "this commit is somewhere on origin/X".
     pub remote_tip_label: Option<String>,
@@ -106,8 +107,9 @@ pub struct BranchInfo {
 }
 
 /// Snapshot of the current branch's relation to its upstream remote-tracking
-/// ref. Computed from local files only — gitwink never calls `git fetch`, so
-/// these counts reflect the user's last fetch, not the live remote.
+/// ref. Computed from local files only — the counts reflect the last fetch
+/// (the user's IDE/CLI, or the optional auto-fetch in `fetch.rs`), not a live
+/// remote query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamStatus {
@@ -697,8 +699,10 @@ const AHEAD_BEHIND_CAP: usize = 99;
 /// unknown branch name, or when no upstream is configured AND no
 /// `origin/<branch>` fallback exists.
 ///
-/// PURE READ. We only inspect refs the user/IDE already wrote with
-/// `git fetch`/`pull`; gitwink never initiates network activity.
+/// PURE READ. We only inspect refs already written locally (by the user's
+/// IDE/CLI or gitwink's optional auto-fetch); this function — and git.rs as a
+/// whole — never reaches the network. The optional panel-open `git fetch`
+/// lives in `fetch.rs`, outside this read-only module.
 pub fn current_upstream_status(
     repo_path: &Path,
     branch_name: Option<&str>,

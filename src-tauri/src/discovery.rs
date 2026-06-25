@@ -13,8 +13,8 @@ const HARD_EXCLUDE: &[&str] = &[
     "vendor",
     ".git",
     // Privacy-sensitive: credentials, keys, kube/cloud configs. gitwink
-    // only looks for `.git` entries — but walking into these dirs at all
-    // is at odds with the "local-only, nothing leaves your machine" promise.
+    // only looks for `.git` entries and never reads anything inside these —
+    // discovery is local-file, read-only, and these dirs stay off-limits.
     ".ssh",
     ".aws",
     ".azure",

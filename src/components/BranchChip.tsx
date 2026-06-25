@@ -269,7 +269,7 @@ export function BranchChip({
         render: () => (
           <div
             className="chip-section-header"
-            title="Remote-tracking refs are local — gitwink never calls git fetch. Updated by your IDE / CLI."
+            title="Remote-tracking refs are read locally — refreshed by your IDE / CLI, or by gitwink's auto-fetch on panel open (Settings → Auto-fetch)."
           >
             Remote tracking
           </div>

@@ -32,6 +32,7 @@ import {
   onOrchestratorProgress,
   onPanelShown,
   onRepoDiscovered,
+  onTimelineInvalidated,
   onUpdateIndicator,
   onUpdateNone,
   onUpdateShowModal,
@@ -82,9 +83,10 @@ interface UpstreamBadgeProps {
 }
 
 /** Tiny inline status badge: shows `synced` / `↑N` / `↓N` / `↑N ↓N` next
- * to the BranchChip in single-repo mode. Reads from local refs only —
- * gitwink never calls git fetch. Tooltip explains the last-fetch caveat
- * so users don't expect live remote state. */
+ * to the BranchChip in single-repo mode. Reads from local refs only — the
+ * counts reflect your last fetch (auto-fetch can refresh them on panel open;
+ * gitwink still never merges, pushes, or rewrites). The tooltip spells out
+ * the last-fetch caveat so users don't expect live remote state. */
 function UpstreamBadge({ status }: UpstreamBadgeProps) {
   const synced = status.ahead === 0 && status.behind === 0;
   const aheadStr = status.ahead.toString() + (status.aheadCapped ? "+" : "");
@@ -93,8 +95,8 @@ function UpstreamBadge({ status }: UpstreamBadgeProps) {
     ? `Last fetch: ${formatFetchAge(status.lastFetchUnix)}`
     : "No fetch recorded yet";
   const title = synced
-    ? `${status.localBranch} is in sync with ${status.upstream}.\n${fetchHint}. gitwink never calls git fetch itself.`
-    : `${status.localBranch} vs ${status.upstream}: ${status.ahead} ahead, ${status.behind} behind.\n${fetchHint}. gitwink never calls git fetch itself.`;
+    ? `${status.localBranch} is in sync with ${status.upstream}.\n${fetchHint}. Reflects your last fetch — auto-fetch can refresh it on panel open.`
+    : `${status.localBranch} vs ${status.upstream}: ${status.ahead} ahead, ${status.behind} behind.\n${fetchHint}. Reflects your last fetch — auto-fetch can refresh it on panel open.`;
 
   return (
     <span
@@ -212,6 +214,10 @@ function App() {
   } | null>(null);
   const warpNonceRef = useRef(0);
   const searchControlRef = useRef<SearchControl | null>(null);
+  // Live mirror of selectedRepoPath for the once-mounted panel-shown / fetch
+  // handlers (which would otherwise close over a stale value).
+  const selectedRepoPathRef = useRef<string | null>(null);
+  selectedRepoPathRef.current = selectedRepoPath;
   // One-shot: a warp just switched repos and forced "all branches" — the
   // branch-selection effect must not re-apply the repo's saved selection
   // over it (the warped-to commit may not be reachable from it).
@@ -280,6 +286,7 @@ function App() {
     let unDiscovered: UnlistenFn | undefined;
     let unStatus: UnlistenFn | undefined;
     let unShown: UnlistenFn | undefined;
+    let unTimelineInvalidated: UnlistenFn | undefined;
     let unUpdateModal: UnlistenFn | undefined;
     let unUpdateNone: UnlistenFn | undefined;
     let unUpdateIndicator: UnlistenFn | undefined;
@@ -338,7 +345,28 @@ function App() {
       // never attached). The webview persists across hide/show, so this
       // is the only re-fetch trigger besides a filter change.
       unShown = await onPanelShown(() => {
-        if (mounted) setRefreshNonce((n) => n + 1);
+        if (!mounted) return;
+        setRefreshNonce((n) => n + 1);
+        // Single-repo mode only (repo != null): optionally fetch the viewed
+        // repo so a teammate's just-pushed commit surfaces. The backend gates
+        // on the auto_fetch_on_show setting + a per-repo cooldown and runs it
+        // non-blocking; the resulting ref update flows back through the
+        // watcher → timeline-invalidated listener below.
+        const repo = selectedRepoPathRef.current;
+        if (repo) {
+          void invoke("maybe_fetch_repo", { repoPath: repo }).catch(() => {});
+        }
+      });
+
+      // Single-repo timeline doesn't subscribe to cache invalidations (it
+      // re-pulls on refreshNonce), so a background change — a local commit, or
+      // the auto-fetch above landing a teammate's commit — wouldn't surface
+      // until the next summon. Bump the nonce so it updates live. All-repos
+      // mode is left to TimelineWindowed's own invalidation listener.
+      unTimelineInvalidated = await onTimelineInvalidated(() => {
+        if (mounted && selectedRepoPathRef.current) {
+          setRefreshNonce((n) => n + 1);
+        }
       });
 
       // Updater: backend asks the panel to surface the modal (tray
@@ -424,6 +452,7 @@ function App() {
       unDiscovered?.();
       unStatus?.();
       unShown?.();
+      unTimelineInvalidated?.();
       unUpdateModal?.();
       unUpdateNone?.();
       unUpdateIndicator?.();

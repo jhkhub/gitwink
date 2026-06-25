@@ -822,6 +822,9 @@ pub struct AppSettings {
     /// When true, the panel is "pinned" — no blur auto-hide, shows in
     /// the taskbar, not always-on-top. False = tray-glance default.
     pub panel_pinned: bool,
+    /// One-shot `git fetch` of the viewed repo on panel summon (single-repo
+    /// mode only). Default ON. See `maybe_fetch_repo` / `fetch.rs`.
+    pub auto_fetch_on_show: bool,
     /// Self-update behaviour. Serialized as "enabled" / "manual" /
     /// "disabled" via the enum's lowercase rename. Meaningful only when
     /// `updater_available` is true.
@@ -850,6 +853,7 @@ pub fn get_settings(
             .filter(|h| !h.trim().is_empty())
             .unwrap_or_else(|| settings::DEFAULT_PANEL_HOTKEY.to_string()),
         panel_pinned: s.panel_pinned.unwrap_or(false),
+        auto_fetch_on_show: s.auto_fetch_on_show.unwrap_or(true),
         update_check: s.update_check,
         updater_available: !update::installed_via_scoop() && !update::installed_via_msix(),
     }
@@ -872,6 +876,7 @@ pub fn set_live_settings(
         s.diff_font_family = next.diff_font_family;
         s.panel_hotkey = Some(next.panel_hotkey);
         s.panel_pinned = Some(next.panel_pinned);
+        s.auto_fetch_on_show = Some(next.auto_fetch_on_show);
         s.update_check = next.update_check;
     });
 }
@@ -1017,6 +1022,46 @@ pub fn set_update_check(app: AppHandle, mode: settings::UpdateCheckMode) {
     if mode == settings::UpdateCheckMode::Enabled {
         update::check_now_background(&app);
     }
+}
+
+/// Persist the auto-fetch-on-show toggle and update the live cache. No
+/// runtime side effects — the fetch itself fires from `maybe_fetch_repo`
+/// on the next panel summon.
+#[tauri::command]
+pub fn set_auto_fetch_on_show(app: AppHandle, enabled: bool) {
+    settings::save_auto_fetch_on_show(&app, enabled);
+    if let Some(live) = app.try_state::<LiveSettings>() {
+        live.with_mut(|s| s.auto_fetch_on_show = Some(enabled));
+    }
+}
+
+/// Called by the panel on summon (single-repo mode) with the viewed repo.
+/// Gated on the `auto_fetch_on_show` setting + per-repo cooldown, then spawns
+/// a non-blocking system `git fetch`. Returns immediately; the fetch runs
+/// detached and its `refs/remotes/*` update flows through the existing
+/// watcher → timeline refresh. Silent no-op when disabled / on cooldown /
+/// path empty. NOTE: this is the one place gitwink reaches a git remote —
+/// it never merges, pushes, or rewrites, so it cannot alter your work.
+#[tauri::command]
+pub fn maybe_fetch_repo(app: AppHandle, repo_path: String) {
+    if repo_path.trim().is_empty() {
+        return;
+    }
+    let enabled = app
+        .try_state::<LiveSettings>()
+        .map(|live| live.snapshot().auto_fetch_on_show.unwrap_or(true))
+        .unwrap_or(true);
+    if !enabled {
+        return;
+    }
+    let Some(cooldown) = app.try_state::<crate::fetch::FetchCooldown>() else {
+        return;
+    };
+    let repo = std::path::PathBuf::from(&repo_path);
+    if !cooldown.try_claim(&repo, crate::fetch::FETCH_COOLDOWN) {
+        return;
+    }
+    tauri::async_runtime::spawn_blocking(move || crate::fetch::git_fetch_one_shot(&repo));
 }
 
 /// Reveal `settings.json` in the user's default editor (or the OS file

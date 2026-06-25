@@ -14,6 +14,9 @@ export interface AppSettings {
   diffFontFamily: string | null;
   panelHotkey: string;
   panelPinned: boolean;
+  /** One-shot `git fetch` of the viewed repo on panel open (single-repo
+   *  mode only). Default ON. */
+  autoFetchOnShow: boolean;
   updateCheck: UpdateCheckMode;
   /** False for Scoop / Microsoft Store installs — the Updates section
    *  of the Settings window hides because those channels manage their
@@ -31,6 +34,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   diffFontFamily: null,
   panelHotkey: "CmdOrCtrl+Shift+G",
   panelPinned: false,
+  autoFetchOnShow: true,
   updateCheck: "enabled",
   updaterAvailable: true,
 };

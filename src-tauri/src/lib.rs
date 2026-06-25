@@ -10,6 +10,7 @@ mod commands;
 mod discovery;
 mod discovery_orchestrator;
 mod discovery_sources;
+mod fetch;
 mod git;
 mod settings;
 mod tray;
@@ -53,6 +54,7 @@ pub fn run() {
             // stale disk while a debounced broadcast was in flight).
             app.manage(commands::LiveSettings::from_disk(app.handle()));
             app.manage(commands::ChangedFilesCache::default());
+            app.manage(fetch::FetchCooldown::default());
             app.manage(discovery_orchestrator::ScanState::default());
 
             // Spin up the .git watcher and attach it to every repo the
@@ -328,6 +330,8 @@ pub fn run() {
             commands::set_panel_pinned,
             commands::open_settings_window,
             commands::set_update_check,
+            commands::set_auto_fetch_on_show,
+            commands::maybe_fetch_repo,
             commands::open_settings_file,
             commands::set_live_settings,
         ])

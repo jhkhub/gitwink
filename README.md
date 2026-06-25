@@ -138,8 +138,9 @@ and a singleton that remembers position, size, and maximised state.
 ## Tech
 
 Tauri 2 · Rust · React + TypeScript · `git2` · SQLite · custom SVG DAG
-drawer · no telemetry, no phone-home — the only network access is an
-opt-out check for updates.
+drawer · read-only (never merges, pushes, or rewrites) · no telemetry or
+analytics — network use is limited and optional: an app-update check
+(GitHub) and an auto-fetch of the repo you're viewing, both toggleable.
 
 ## Development
 

@@ -116,6 +116,14 @@ export function Settings() {
     void invoke("set_update_check", { mode });
   }
 
+  function setAutoFetch(enabled: boolean) {
+    const next = { ...settings, autoFetchOnShow: enabled };
+    setSettings(next);
+    broadcastSettings(next);
+    // A checkbox is a single discrete event — persist immediately, no debounce.
+    void invoke("set_auto_fetch_on_show", { enabled });
+  }
+
   function openSettingsFile() {
     void invoke("open_settings_file").catch((err) => {
       // Surface in console for triage; the user already gets OS-level
@@ -328,6 +336,26 @@ export function Settings() {
           </div>
         </section>
       )}
+
+      <section className="settings-section">
+        <h2 className="settings-section-title">Auto-fetch</h2>
+        <label className="settings-radio">
+          <input
+            type="checkbox"
+            checked={settings.autoFetchOnShow}
+            onChange={(e) => setAutoFetch(e.target.checked)}
+          />
+          <span className="settings-radio-label">Fetch on panel open</span>
+          <span className="settings-radio-hint">
+            When viewing a single repo, run a quiet background{" "}
+            <code>git fetch</code> as the panel opens, so a teammate's
+            just-pushed commit shows up. Never blocks the panel, stays silent
+            if it needs a password or has no network, and skips repos fetched
+            in the last few minutes. The all-repos view never fetches.
+            (gitwink still never merges, pushes, or rewrites your work.)
+          </span>
+        </label>
+      </section>
 
       <footer className="settings-footer">
         <button

@@ -64,8 +64,9 @@ export interface CommitSummary {
   /** Full commit message (summary + body). */
   message: string;
   /** Remote-tracking ref shorthand (e.g. "origin/main") whose tip points
-   * at this exact commit. Local file read — gitwink never calls fetch.
-   * null when no remote ref points here. Separate from branchLabel
+   * at this exact commit. Read from local refs (refreshed by your IDE/CLI
+   * or gitwink's optional auto-fetch). null when no remote ref points here.
+   * Separate from branchLabel
    * because remote tip identity is "this commit IS the tip of origin/X",
    * not "this commit is somewhere on origin/X". */
   remoteTipLabel: string | null;
@@ -99,8 +100,9 @@ export interface BranchCommitCount {
 }
 
 /** Snapshot of the current branch's relation to its upstream remote-tracking
- * ref. Computed from local files only — gitwink never calls git fetch, so
- * these counts reflect the user's last fetch, not the live remote. */
+ * ref. Computed from local files only — the counts reflect the last fetch
+ * (your IDE/CLI, or gitwink's optional auto-fetch on panel open), not a live
+ * remote query. */
 export interface UpstreamStatus {
   localBranch: string;
   /** e.g. "origin/main" */

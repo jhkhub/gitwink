@@ -2,7 +2,9 @@
 //
 // HARD RULES:
 // - Every read is local-file, read-only. Never copy, modify, or write.
-// - No network, no telemetry, no IPC outside the app's own events.
+// - This module: no network, no telemetry, no IPC outside the app's own
+//   events — discovery is purely local-file reads. (App-wide, the only
+//   network is the optional GitHub update check + the optional auto-fetch.)
 // - All readers are budget-aware (deadline + cap on entries) so the
 //   sync first-paint path never gets stuck on a giant DB.
 // - All readers are best-effort: a missing file, locked DB, schema
