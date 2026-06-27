@@ -82,6 +82,10 @@ gets out of the way.
 
 No commit. No push. No merge. If I need git surgery, I tell the agent.
 
+For the longer argument behind this design — what a git tool should even
+*be* once the agent writes the code — see the essay
+[The agent writes the code now — what should a git tool be?](https://var.gg/en/blog/git-tools-in-the-agent-era).
+
 ## The loop
 
 The 0.5-second confirm loop:

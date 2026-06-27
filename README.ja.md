@@ -81,6 +81,11 @@ Windows SmartScreen / macOS Gatekeeper が警告を出す — 回避手順はリ
 commit なし。push なし。merge なし。git の手術が必要なら、エージェント
 に頼む。
 
+この設計の背後にあるより長い論考 — エージェントがコードを書く時代に
+git ツールは *何であるべきか* — はエッセイ
+[The agent writes the code now — what should a git tool be?](https://var.gg/en/blog/git-tools-in-the-agent-era)
+（英語）にまとめている。
+
 ## ループ
 
 0.5 秒の確認ループ:
