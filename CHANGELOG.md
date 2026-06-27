@@ -5,6 +5,37 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-06-28
+
+### Added
+
+- **Fresh commits show up on their own — auto-fetch on panel open.** When you
+  open a single repo, gitwink runs a quiet `git fetch origin` in the background
+  so a teammate's just-pushed commits appear without you reaching for the
+  terminal. **On by default** (a one-time notice explains it the first time);
+  turn it off in Settings → Auto-fetch. It is pinned to `origin` with a
+  branch-only refspec and runs with repo hooks disabled, so it only ever
+  updates the remote-tracking mirror — never your branches, working tree, or
+  history. gitwink still has no merge / push / rewrite features, so it cannot
+  damage your work.
+- **File history — the commits that touched one file.** Hover a file in the
+  diff window and click 🕘 to scope the timeline to that file's history,
+  newest first, drawn as a single thread through the revisions. (Renames
+  aren't followed across history yet.)
+
+### Changed
+
+- **"Full" diffs of huge files scroll smoothly now.** The side-by-side view is
+  virtualized — only the lines on screen are rendered and highlighted — so a
+  multi-thousand-line file opens and scrolls without the stutter, and dragging
+  the old/new splitter stays fluid.
+- **Honest about the network.** gitwink no longer claims "no network" — it was
+  never strictly true (the updater checks GitHub), and the new auto-fetch
+  reaches your own `origin`. PRIVACY.md and the READMEs now disclose exactly
+  what talks to the network — both optional, both to services you already use —
+  and lead with what actually matters: fast, lightweight, and read-only where
+  it counts.
+
 ## [0.8.0] — 2026-06-24
 
 ### Added
