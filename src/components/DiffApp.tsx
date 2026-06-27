@@ -7,6 +7,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   changedFiles,
   fileDiff,
+  openFileHistory,
   takePendingDiffOpen,
   WHOLE_FILE_CONTEXT,
   type DiffOpenPayload,
@@ -367,38 +368,50 @@ export function DiffApp() {
               const dir = slash >= 0 ? f.path.slice(0, slash + 1) : "";
               const name = slash >= 0 ? f.path.slice(slash + 1) : f.path;
               return (
-                <button
+                <div
                   key={f.path}
-                  className={"diff-file" + (isSel ? " active" : "")}
-                  onClick={() => setSelectedFile(f.path)}
-                  title={f.path}
+                  className={"diff-file-wrap" + (isSel ? " active" : "")}
                 >
-                  <div className="diff-file-line">
-                    <span className="diff-file-name">{name}</span>
-                    {f.isBinary && (
-                      <span className="changed-file-bin" title="Binary file">
-                        bin
-                      </span>
-                    )}
-                    <span className="diff-file-stat">
-                      {f.isBinary ? (
-                        <span className="diff-file-binsize">
-                          {formatSize(f.newSize ?? f.oldSize)}
+                  <button
+                    className={"diff-file" + (isSel ? " active" : "")}
+                    onClick={() => setSelectedFile(f.path)}
+                    title={f.path}
+                  >
+                    <div className="diff-file-line">
+                      <span className="diff-file-name">{name}</span>
+                      {f.isBinary && (
+                        <span className="changed-file-bin" title="Binary file">
+                          bin
                         </span>
-                      ) : (
-                        <>
-                          <span className="changed-file-plus">
-                            +{f.insertions}
-                          </span>
-                          <span className="changed-file-minus">
-                            −{f.deletions}
-                          </span>
-                        </>
                       )}
-                    </span>
-                  </div>
-                  {dir && <div className="diff-file-dir">{dir}</div>}
-                </button>
+                      <span className="diff-file-stat">
+                        {f.isBinary ? (
+                          <span className="diff-file-binsize">
+                            {formatSize(f.newSize ?? f.oldSize)}
+                          </span>
+                        ) : (
+                          <>
+                            <span className="changed-file-plus">
+                              +{f.insertions}
+                            </span>
+                            <span className="changed-file-minus">
+                              −{f.deletions}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    {dir && <div className="diff-file-dir">{dir}</div>}
+                  </button>
+                  <button
+                    className="diff-file-history"
+                    title="Show this file's history in the panel"
+                    aria-label={`Show history of ${name}`}
+                    onClick={() => void openFileHistory(ctx.repoPath, f.path)}
+                  >
+                    🕘
+                  </button>
+                </div>
               );
             })
           )}

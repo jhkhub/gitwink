@@ -1252,6 +1252,140 @@ pub fn repo_commits(
     Ok(out)
 }
 
+/// Caps for `file_history`: stop at this many MATCHES (a file rarely changes
+/// more than a few hundred times), and never examine more than this many
+/// commits (bounds the pathological "changed twice in a 100k-commit history"
+/// case). Off-UI, like every other walk.
+const FILE_HISTORY_MAX_MATCHES: usize = 1000;
+const FILE_HISTORY_SCAN_CAP: usize = 50_000;
+
+/// Commits that changed `file_path` (repo-relative, '/'-separated), newest
+/// first. A live, capped revwalk over all local heads + HEAD: for each commit
+/// we compare the blob id at that path against the FIRST parent's — added,
+/// modified, and deleted all count; the root commit counts if the file is
+/// present. Bounds BOTH the matches returned and the commits examined, so a
+/// rarely-touched file in a huge history still returns quickly. No rename
+/// following yet — a path renamed in the past shows only its history under the
+/// name asked for (v1). `whole_history` flags whether the scan cap was hit
+/// (the caller can tell the user "scanned the most recent N commits").
+pub fn file_history(repo_path: &Path, file_path: &str) -> Result<Vec<CommitSummary>> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("open repo {}", repo_path.display()))?;
+
+    let repo_path_str = repo_path.to_string_lossy().into_owned();
+    let repo_name = repo_path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    let detached = repo.head_detached().unwrap_or(true);
+    let head_branch_name: Option<String> = if detached {
+        None
+    } else {
+        repo.head()
+            .ok()
+            .and_then(|h| h.shorthand().map(|s| s.to_string()))
+    };
+    let tagged_oids = collect_tagged_oids(&repo);
+
+    let mut revwalk = repo.revwalk().context("init revwalk")?;
+    revwalk
+        .set_sorting(Sort::TIME)
+        .context("set revwalk sort")?;
+    let mut pushed = 0usize;
+    if let Ok(refs) = repo.references_glob("refs/heads/*") {
+        for r in refs.flatten() {
+            if let Some(oid) = r.target() {
+                if revwalk.push(oid).is_ok() {
+                    pushed += 1;
+                }
+            }
+        }
+    }
+    if let Ok(head) = repo.head() {
+        if let Ok(c) = head.peel_to_commit() {
+            if revwalk.push(c.id()).is_ok() {
+                pushed += 1;
+            }
+        }
+    }
+    if pushed == 0 {
+        return Ok(Vec::new());
+    }
+
+    let path = Path::new(file_path);
+    // Blob id at `path` in a commit's tree, or None when the path is absent.
+    let entry_oid = |commit: &git2::Commit<'_>| -> Option<Oid> {
+        commit
+            .tree()
+            .ok()
+            .and_then(|t| t.get_path(path).ok().map(|e| e.id()))
+    };
+
+    let mut raw: Vec<(Oid, git2::Commit<'_>)> = Vec::new();
+    let mut examined = 0usize;
+    for oid in revwalk {
+        if raw.len() >= FILE_HISTORY_MAX_MATCHES || examined >= FILE_HISTORY_SCAN_CAP {
+            break;
+        }
+        let oid = match oid {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
+        let commit = match repo.find_commit(oid) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        examined += 1;
+        let cur = entry_oid(&commit);
+        // Compare to the FIRST parent only (linear-history / --first-parent
+        // semantics): a merge shows up iff it changed the path vs its first
+        // parent. A root commit (no parent) counts iff the file exists in it.
+        let parent_entry = match commit.parent(0) {
+            Ok(p) => entry_oid(&p),
+            Err(_) => None,
+        };
+        if cur != parent_entry {
+            raw.push((oid, commit));
+        }
+    }
+
+    let targets: HashSet<Oid> = raw.iter().map(|(oid, _)| *oid).collect();
+    let labels = compute_branch_labels(&repo, head_branch_name.as_deref(), &targets);
+
+    let mut out: Vec<CommitSummary> = Vec::with_capacity(raw.len());
+    for (oid, commit) in raw {
+        let hash = oid.to_string();
+        let short_hash: String = hash.chars().take(7).collect();
+        let summary = commit.summary().unwrap_or("").to_string();
+        let author = commit.author();
+        let parents: Vec<String> = commit.parent_ids().map(|p| p.to_string()).collect();
+        let message = commit.message().unwrap_or("").to_string();
+        let ts = commit.time().seconds();
+        let branch_label = labels.get(&oid).cloned().flatten();
+        out.push(CommitSummary {
+            repo_path: repo_path_str.clone(),
+            repo_name: repo_name.clone(),
+            hash,
+            short_hash,
+            summary,
+            author: author.name().unwrap_or("").to_string(),
+            email: author.email().unwrap_or("").to_string(),
+            timestamp: ts,
+            branch_label,
+            is_merge: commit.parent_count() > 1,
+            is_tagged: tagged_oids.contains(&oid),
+            parents,
+            message,
+            // Remote-tip badges are about "is this the tip of origin/X" — not
+            // meaningful for a file-history list, so we skip the extra work.
+            remote_tip_label: None,
+            remote_tip_extra_count: 0,
+        });
+    }
+    Ok(out)
+}
+
 /// Walk every local head and return up to `max_count` recent commits whose
 /// author time is at or after `since_unix_seconds`. Empty / detached repos
 /// return an empty vector rather than erroring.
@@ -1440,6 +1574,101 @@ mod tests {
         let tree = empty_tree(repo);
         repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, parents)
             .unwrap()
+    }
+
+    // A tree builder seeded from the first parent's tree (so unrelated files
+    // persist across commits), for the file-history tests.
+    fn builder_from_parent<'a>(
+        repo: &'a Repository,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::TreeBuilder<'a> {
+        match parents.first() {
+            Some(p) => repo.treebuilder(Some(&p.tree().unwrap())).unwrap(),
+            None => repo.treebuilder(None).unwrap(),
+        }
+    }
+
+    fn commit_file(
+        repo: &Repository,
+        file: &str,
+        content: &str,
+        msg: &str,
+        ts: i64,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Oid {
+        let sig = Signature::new("t", "t@e", &Time::new(ts, 0)).unwrap();
+        let blob = repo.blob(content.as_bytes()).unwrap();
+        let mut b = builder_from_parent(repo, parents);
+        b.insert(file, blob, 0o100644).unwrap();
+        let tree = repo.find_tree(b.write().unwrap()).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, parents)
+            .unwrap()
+    }
+
+    fn commit_remove(
+        repo: &Repository,
+        file: &str,
+        msg: &str,
+        ts: i64,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Oid {
+        let sig = Signature::new("t", "t@e", &Time::new(ts, 0)).unwrap();
+        let mut b = builder_from_parent(repo, parents);
+        b.remove(file).unwrap();
+        let tree = repo.find_tree(b.write().unwrap()).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, parents)
+            .unwrap()
+    }
+
+    #[test]
+    fn file_history_tracks_add_modify_delete_only() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let c1 = commit_file(&repo, "a.txt", "v1", "add a", 1_000, &[]);
+        let c1c = repo.find_commit(c1).unwrap();
+        let c2 = commit_file(&repo, "a.txt", "v2", "edit a", 2_000, &[&c1c]);
+        let c2c = repo.find_commit(c2).unwrap();
+        // Touches b.txt only — must NOT appear in a.txt's history.
+        let c3 = commit_file(&repo, "b.txt", "x", "add b", 3_000, &[&c2c]);
+        let c3c = repo.find_commit(c3).unwrap();
+        let _c4 = commit_remove(&repo, "a.txt", "rm a", 4_000, &[&c3c]);
+
+        let hist = file_history(dir.path(), "a.txt").unwrap();
+        assert_eq!(
+            hist.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(),
+            vec!["rm a", "edit a", "add a"],
+        );
+        // b.txt's history is just its own add.
+        let bhist = file_history(dir.path(), "b.txt").unwrap();
+        assert_eq!(
+            bhist.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(),
+            vec!["add b"],
+        );
+    }
+
+    #[test]
+    fn file_history_unknown_path_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let _ = commit_file(&repo, "a.txt", "v1", "add a", 1_000, &[]);
+        assert!(file_history(dir.path(), "nope.txt").unwrap().is_empty());
+    }
+
+    #[test]
+    fn file_history_finds_changes_on_other_branches() {
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let base = commit_file(&repo, "a.txt", "v1", "base", 1_000, &[]);
+        let basec = repo.find_commit(base).unwrap();
+        // A side branch edits a.txt; HEAD stays on `base`.
+        let side = commit_file(&repo, "a.txt", "v2", "side edit", 2_000, &[&basec]);
+        repo.branch("feature", &repo.find_commit(side).unwrap(), false)
+            .unwrap();
+        // Walk covers all local heads, so the side edit is included.
+        let hist = file_history(dir.path(), "a.txt").unwrap();
+        let msgs: Vec<&str> = hist.iter().map(|c| c.summary.as_str()).collect();
+        assert!(msgs.contains(&"side edit"), "got {msgs:?}");
+        assert!(msgs.contains(&"base"), "got {msgs:?}");
     }
 
     #[test]

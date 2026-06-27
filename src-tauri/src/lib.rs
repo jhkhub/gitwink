@@ -309,6 +309,8 @@ pub fn run() {
             commands::changed_files_batch,
             commands::file_diff,
             commands::commit_file_blobs,
+            commands::file_history,
+            commands::open_file_history,
             commands::open_diff,
             commands::take_pending_diff_open,
             commands::dismiss_panel,

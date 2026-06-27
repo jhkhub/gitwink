@@ -2072,6 +2072,48 @@ body,
   opacity: 0.6;
 }
 
+/* File row = select button + a hover-revealed history button, side by side
+   (not nested — keeps it valid + each independently clickable). */
+.diff-file-wrap {
+  display: flex;
+  align-items: stretch;
+}
+.diff-file-wrap.active {
+  background: rgba(80, 130, 240, 0.18);
+}
+@media (prefers-color-scheme: dark) {
+  .diff-file-wrap.active {
+    background: rgba(140, 180, 255, 0.2);
+  }
+}
+.diff-file-wrap:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  .diff-file-wrap:hover {
+    background: rgba(255, 255, 255, 0.05);
+  }
+}
+
+.diff-file-history {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 8px;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.diff-file-wrap:hover .diff-file-history,
+.diff-file-history:focus-visible {
+  opacity: 0.65;
+}
+.diff-file-history:hover {
+  opacity: 1;
+}
+
 .diff-file {
   display: block;
   width: 100%;
@@ -2084,22 +2126,8 @@ body,
   cursor: pointer;
 }
 
-.diff-file:hover {
-  background: rgba(0, 0, 0, 0.04);
-}
-
-.diff-file.active {
-  background: rgba(80, 130, 240, 0.18);
-}
-
-@media (prefers-color-scheme: dark) {
-  .diff-file:hover {
-    background: rgba(255, 255, 255, 0.05);
-  }
-  .diff-file.active {
-    background: rgba(140, 180, 255, 0.20);
-  }
-}
+/* Row hover/active highlighting lives on .diff-file-wrap so it covers the
+   history button too; the inner button stays transparent. */
 
 .diff-file-line {
   display: flex;
@@ -3189,6 +3217,47 @@ body,
 
 .warp-back:hover {
   background: rgba(80, 130, 240, 0.26);
+}
+
+/* File-history scope pill — same family as warp-back, amber to signal a
+   distinct "you're looking at one file's history" mode. Truncates the name so
+   a long path can't shove the other header controls off-screen. */
+.filehist-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: calc(180px * var(--ui-scale, 1));
+  align-self: center;
+  border: none;
+  background: rgba(220, 160, 40, 0.18);
+  border-radius: 10px;
+  color: inherit;
+  font: inherit;
+  font-size: calc(11px * var(--ui-scale, 1));
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.filehist-chip:hover {
+  background: rgba(220, 160, 40, 0.3);
+}
+.filehist-chip-icon {
+  flex-shrink: 0;
+}
+.filehist-chip-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+}
+.filehist-chip-x {
+  flex-shrink: 0;
+  opacity: 0.6;
+  font-size: 0.85em;
+}
+.filehist-chip:hover .filehist-chip-x {
+  opacity: 1;
 }
 
 /* Header search toggle — the discoverable way into `/`. */

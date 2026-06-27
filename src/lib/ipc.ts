@@ -122,6 +122,15 @@ export async function changedFiles(
   return invoke<ChangedFile[]>("changed_files", { repoPath, hash });
 }
 
+/** Commits that changed `filePath` in this repo, newest first. Backs the
+ *  file-history scope in the timeline — a live, capped libgit2 walk. */
+export async function fileHistory(
+  repoPath: string,
+  filePath: string,
+): Promise<CommitSummary[]> {
+  return invoke<CommitSummary[]>("file_history", { repoPath, filePath });
+}
+
 /** Fire-and-forget prefetch on hover. Errors are swallowed silently. */
 export async function prefetchCommit(
   repoPath: string,
@@ -207,6 +216,28 @@ export interface DiffOpenPayload {
 
 export async function takePendingDiffOpen(): Promise<DiffOpenPayload | null> {
   return invoke<DiffOpenPayload | null>("take_pending_diff_open");
+}
+
+/** Payload of the `history://open` event the diff window sends the panel. */
+export interface FileHistoryOpen {
+  repoPath: string;
+  filePath: string;
+}
+
+/** From the diff window: bring the panel forward and scope its timeline to
+ *  this file's history. */
+export async function openFileHistory(
+  repoPath: string,
+  filePath: string,
+): Promise<void> {
+  await invoke("open_file_history", { repoPath, filePath });
+}
+
+/** Panel-side: fires when a diff window asks to show a file's history. */
+export async function onFileHistoryOpen(
+  cb: (p: FileHistoryOpen) => void,
+): Promise<UnlistenFn> {
+  return listen<FileHistoryOpen>("history://open", (e) => cb(e.payload));
 }
 
 export async function dismissPanel(): Promise<void> {

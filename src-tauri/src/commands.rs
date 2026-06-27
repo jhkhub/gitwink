@@ -745,6 +745,49 @@ pub async fn open_diff(
         .ok_or_else(|| "diff dispatch dropped".to_string())?
 }
 
+/// Commits that changed `file_path` in `repo_path`, newest first. Live, capped
+/// libgit2 walk (see `git::file_history`); off-UI. Backs the file-history scope
+/// in the panel timeline.
+#[tauri::command]
+pub async fn file_history(
+    repo_path: String,
+    file_path: String,
+) -> Result<Vec<git::CommitSummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::file_history(Path::new(&repo_path), &file_path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Payload for `history://open` — tells the panel to scope its timeline to one
+/// file's history.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHistoryOpen {
+    pub repo_path: String,
+    pub file_path: String,
+}
+
+/// From the diff window: bring the panel forward and ask it to scope its
+/// timeline to this file's history. The panel webview is always mounted, so a
+/// direct emit reaches its listener; we show + focus so the user lands on it.
+#[tauri::command]
+pub fn open_file_history(app: AppHandle, repo_path: String, file_path: String) {
+    if let Some(panel) = app.get_webview_window("panel") {
+        let _ = panel.show();
+        let _ = panel.set_focus();
+    }
+    let _ = app.emit_to(
+        "panel",
+        "history://open",
+        FileHistoryOpen {
+            repo_path,
+            file_path,
+        },
+    );
+}
+
 #[tauri::command]
 pub async fn repo_commits(
     app: AppHandle,

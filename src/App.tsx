@@ -23,6 +23,7 @@ import {
   currentUpstreamStatus,
   dismissPanel,
   explicitAddRepo,
+  fileHistory as fetchFileHistory,
   getBranchSelection,
   getPinnedRepos,
   getScanState,
@@ -30,6 +31,7 @@ import {
   listBranches,
   listFilterFacets,
   listRepos,
+  onFileHistoryOpen,
   onOrchestratorProgress,
   onPanelShown,
   onRepoDiscovered,
@@ -208,6 +210,14 @@ function App() {
   // when refs move and stay cheap on a plain re-show.
   const [refsNonce, setRefsNonce] = useState(0);
 
+  // File-history scope: when set, single-repo mode shows the commits that
+  // touched this file (a live capped walk), ignoring the branch/author/time
+  // lenses. Cleared by the chip's ✕, Esc, or picking a different repo.
+  const [fileHistory, setFileHistory] = useState<{
+    repoPath: string;
+    filePath: string;
+  } | null>(null);
+
   // One-time disclosure: gitwink now fetches the open repo's remote on view.
   // Show it once while auto-fetch is on and unacknowledged — this is also the
   // upgrade-time heads-up for anyone who installed under the old no-network
@@ -316,6 +326,7 @@ function App() {
     let unStatus: UnlistenFn | undefined;
     let unShown: UnlistenFn | undefined;
     let unTimelineInvalidated: UnlistenFn | undefined;
+    let unFileHistory: UnlistenFn | undefined;
     let unUpdateModal: UnlistenFn | undefined;
     let unUpdateNone: UnlistenFn | undefined;
     let unUpdateIndicator: UnlistenFn | undefined;
@@ -404,6 +415,18 @@ function App() {
         setRefsNonce((n) => n + 1); // branch list + upstream badge re-eval
       });
 
+      // A diff window asked to show a file's history — enter single-repo mode
+      // for that repo and scope the timeline to the file. The commits effect
+      // sees `fileHistory` and fetches the file's history instead.
+      unFileHistory = await onFileHistoryOpen((p) => {
+        if (!mounted) return;
+        setSearchOpen(false);
+        setWarpReturn(null);
+        setSelectedRepoPath(p.repoPath);
+        setFileHistory({ repoPath: p.repoPath, filePath: p.filePath });
+        setRefreshNonce((n) => n + 1);
+      });
+
       // Updater: backend asks the panel to surface the modal (tray
       // "Update available" item, a manual check hit, or a Scoop install).
       unUpdateModal = await onUpdateShowModal(async () => {
@@ -488,6 +511,7 @@ function App() {
       unStatus?.();
       unShown?.();
       unTimelineInvalidated?.();
+      unFileHistory?.();
       unUpdateModal?.();
       unUpdateNone?.();
       unUpdateIndicator?.();
@@ -705,11 +729,27 @@ function App() {
   // really means no rows.
   useEffect(() => {
     if (!singleMode || !selectedRepoPath) return;
+    let cancelled = false;
+    // File-history scope wins: show the commits that touched this file,
+    // ignoring the (dimmed) branch / author / time lenses.
+    if (fileHistory && fileHistory.repoPath === selectedRepoPath) {
+      const { repoPath, filePath } = fileHistory;
+      (async () => {
+        try {
+          const cs = await fetchFileHistory(repoPath, filePath);
+          if (!cancelled) setCommits(cs);
+        } catch {
+          if (!cancelled) setCommits([]);
+        }
+      })();
+      return () => {
+        cancelled = true;
+      };
+    }
     if (selectedBranches !== "all" && selectedBranches.length === 0) {
       setCommits([]);
       return;
     }
-    let cancelled = false;
     (async () => {
       try {
         const branchParam =
@@ -725,7 +765,14 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [singleMode, selectedRepoPath, selectedBranches, windowDays, refreshNonce]);
+  }, [
+    singleMode,
+    selectedRepoPath,
+    selectedBranches,
+    windowDays,
+    refreshNonce,
+    fileHistory,
+  ]);
 
   // Manual add via drag-drop / paste. Returns whether the add succeeded
   // so the paste handler can clear the clipboard string only on success.
@@ -910,6 +957,13 @@ function App() {
         e.preventDefault();
         return;
       }
+      // File history: Esc drops the file scope first (back to the repo's
+      // normal timeline); a second Esc then leaves single-repo mode.
+      if (fileHistory) {
+        setFileHistory(null);
+        e.preventDefault();
+        return;
+      }
       if (singleMode) {
         setSelectedRepoPath(null);
         e.preventDefault();
@@ -927,6 +981,7 @@ function App() {
     updateModal,
     searchOpen,
     warpReturn,
+    fileHistory,
     closeSearch,
     returnToSearch,
   ]);
@@ -959,10 +1014,13 @@ function App() {
   // just narrow the loaded commits by the author selection.
   const filteredCommits = useMemo(() => {
     if (!commits) return null;
+    // File history shows every commit that touched the file — the author
+    // lens is dimmed/inert in that mode, so don't filter by it.
+    if (fileHistory) return commits;
     if (selectedAuthors === "all") return commits;
     const set = new Set(selectedAuthors);
     return commits.filter((c) => set.has(c.author));
-  }, [commits, selectedAuthors]);
+  }, [commits, selectedAuthors, fileHistory]);
 
   // Resolve the multi-repo path filter to backend repo ids for the
   // windowed timeline. id 0 (a just-discovered repo not yet refreshed via
@@ -999,10 +1057,12 @@ function App() {
   }, []);
   const changeRepoPath = useCallback((p: string | null) => {
     setWarpReturn(null);
+    setFileHistory(null); // picking a repo leaves the file-history scope
     setSelectedRepoPath(p);
   }, []);
   const changeRepoPaths = useCallback((ps: string[] | "all") => {
     setWarpReturn(null);
+    setFileHistory(null);
     setSelectedRepoPaths(ps);
   }, []);
 
@@ -1078,6 +1138,24 @@ function App() {
               ‹ search
             </button>
           )}
+          {fileHistory && (
+            <button
+              type="button"
+              className="filehist-chip"
+              onClick={() => setFileHistory(null)}
+              title={`History of ${fileHistory.filePath} — click to exit (Esc)`}
+            >
+              <span className="filehist-chip-icon" aria-hidden="true">
+                🕘
+              </span>
+              <span className="filehist-chip-name">
+                {fileHistory.filePath.split("/").pop()}
+              </span>
+              <span className="filehist-chip-x" aria-hidden="true">
+                ✕
+              </span>
+            </button>
+          )}
           <RepoChip
             open={openChip === "repo"}
             onToggle={() => setOpenChip(openChip === "repo" ? null : "repo")}
@@ -1107,8 +1185,17 @@ function App() {
           />
           {singleMode && (
             <span
-              className={"chip-slot" + (searching ? " chip-dimmed" : "")}
-              title={searching ? "Not applied while searching" : undefined}
+              className={
+                "chip-slot" +
+                (searching || fileHistory ? " chip-dimmed" : "")
+              }
+              title={
+                fileHistory
+                  ? "Not applied in file history"
+                  : searching
+                    ? "Not applied while searching"
+                    : undefined
+              }
             >
               <BranchChip
                 open={openChip === "branch"}
@@ -1123,15 +1210,23 @@ function App() {
               />
             </span>
           )}
-          {singleMode && upstream && (
+          {singleMode && upstream && !fileHistory && (
             <UpstreamBadge status={upstream} />
           )}
           {/* Time + author chips are view lenses — an active search
               bypasses them (dimmed to say so). The repo scope above
               stays live. */}
           <span
-            className={"chip-slot" + (searching ? " chip-dimmed" : "")}
-            title={searching ? "Not applied while searching" : undefined}
+            className={
+              "chip-slot" + (searching || fileHistory ? " chip-dimmed" : "")
+            }
+            title={
+              fileHistory
+                ? "Not applied in file history"
+                : searching
+                  ? "Not applied while searching"
+                  : undefined
+            }
           >
             <TimeRangeChip
               open={openChip === "time"}
@@ -1142,8 +1237,16 @@ function App() {
             />
           </span>
           <span
-            className={"chip-slot" + (searching ? " chip-dimmed" : "")}
-            title={searching ? "Not applied while searching" : undefined}
+            className={
+              "chip-slot" + (searching || fileHistory ? " chip-dimmed" : "")
+            }
+            title={
+              fileHistory
+                ? "Not applied in file history"
+                : searching
+                  ? "Not applied while searching"
+                  : undefined
+            }
           >
             <AuthorsChip
               open={openChip === "authors"}
