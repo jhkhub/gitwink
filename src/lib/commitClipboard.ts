@@ -7,7 +7,7 @@ import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import type { MenuItem } from "../components/ContextMenu";
 import type { CommitSummary } from "../types";
 import { buildAiContext } from "./copy";
-import { changedFiles, fileDiff } from "./ipc";
+import { changedFiles, fileDiff, openFileHistory } from "./ipc";
 import { refLine, refLineWithFile } from "./smartcopy";
 
 /** Diff-size ceiling (changed lines) under which "Copy as AI context"
@@ -47,9 +47,37 @@ export async function copyCommitAiContext(
   }
 }
 
+/** Context-menu items scoped to a single changed file: open its history in
+ * the panel (cross-window) and copy its path. Shared by the timelines AND the
+ * diff window so right-clicking a file behaves identically everywhere. The
+ * history entry needs a repo to resolve against, so it's omitted when the
+ * caller has a path but no repo. */
+export function fileMenuItems(
+  repoPath: string | null,
+  filePath: string | null,
+): MenuItem[] {
+  if (!filePath) return [];
+  const items: MenuItem[] = [];
+  if (repoPath) {
+    items.push({
+      label: "🕘 Show file history",
+      ariaLabel: "Show file history",
+      onClick: () => void openFileHistory(repoPath, filePath),
+    });
+  }
+  items.push({
+    label: "Copy file path",
+    onClick: () => void writeText(filePath),
+  });
+  return items;
+}
+
 /** Build the timeline context-menu items for a (possibly null) commit, an
  * optional changed-file path, and the current text selection. Shared by the
- * all-repos and single-repo timelines so their right-click menus match. */
+ * all-repos and single-repo timelines so their right-click menus match.
+ *
+ * Grouped by subject — selection · file · commit — each its own section so the
+ * one real action (file history) reads as an action, not a clipboard verb. */
 export function buildCommitMenuItems(opts: {
   commit: CommitSummary | null;
   filePath: string | null;
@@ -73,11 +101,10 @@ export function buildCommitMenuItems(opts: {
     items.push({ divider: true });
   }
 
-  if (filePath) {
-    items.push({
-      label: "Copy file path",
-      onClick: () => void writeText(filePath),
-    });
+  const fileItems = fileMenuItems(commit?.repoPath ?? null, filePath);
+  if (fileItems.length) {
+    items.push(...fileItems);
+    if (commit) items.push({ divider: true });
   }
 
   if (commit) {

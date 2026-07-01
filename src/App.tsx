@@ -243,10 +243,31 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchCount, setSearchCount] = useState<number | null>(null);
   const [searchFocusNonce, setSearchFocusNonce] = useState(0);
+  // One-time "here's what this can do" tip, shown once the first repo's
+  // commits are on screen. Persisted in localStorage (frontend-only, no
+  // settings round-trip) — the glance loop's power features (search, file
+  // history, copy-for-AI) are otherwise discoverable only by accident.
+  const [firstRunTipSeen, setFirstRunTipSeen] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      window.localStorage.getItem("gitwink.firstRunTipSeen") === "1",
+  );
+  const dismissFirstRunTip = useCallback(() => {
+    setFirstRunTipSeen(true);
+    try {
+      window.localStorage.setItem("gitwink.firstRunTipSeen", "1");
+    } catch {}
+  }, []);
   // Warp = Enter on a result: land in that commit's single-repo history
   // with the filters auto-corrected. `warpReturn` is the one-deep back
   // stack (Esc → reopen the search), cleared by any manual chip change.
   const [warpReturn, setWarpReturn] = useState<WarpReturn | null>(null);
+  // The view a file-history session was entered FROM, so exiting returns you
+  // there (e.g. back to all-repos) instead of stranding you in the single-repo
+  // scope file-history forced. Captured on the first 🕘 open, restored on exit.
+  const [fileHistoryReturn, setFileHistoryReturn] = useState<WarpReturn | null>(
+    null,
+  );
   const [warpAnchor, setWarpAnchor] = useState<{
     hash: string;
     nonce: number;
@@ -257,6 +278,22 @@ function App() {
   // handlers (which would otherwise close over a stale value).
   const selectedRepoPathRef = useRef<string | null>(null);
   selectedRepoPathRef.current = selectedRepoPath;
+  // Live snapshot of the current view, so the once-mounted file-history
+  // listener (a stale closure) can capture the view it's replacing.
+  const viewRef = useRef<WarpReturn>({
+    repoPath: null,
+    repoPaths: "all",
+    branches: "all",
+    windowDays: 7,
+    authors: "all",
+  });
+  viewRef.current = {
+    repoPath: selectedRepoPath,
+    repoPaths: selectedRepoPaths,
+    branches: selectedBranches,
+    windowDays,
+    authors: selectedAuthors,
+  };
   // One-shot: a warp just switched repos and forced "all branches" — the
   // branch-selection effect must not re-apply the repo's saved selection
   // over it (the warped-to commit may not be reachable from it).
@@ -420,6 +457,10 @@ function App() {
       // sees `fileHistory` and fetches the file's history instead.
       unFileHistory = await onFileHistoryOpen((p) => {
         if (!mounted) return;
+        // Remember where we came from — but only the FIRST time, so opening a
+        // second file's history from within file-history mode still returns to
+        // the original pre-history view.
+        setFileHistoryReturn((prev) => prev ?? viewRef.current);
         setSearchOpen(false);
         setWarpReturn(null);
         setSelectedRepoPath(p.repoPath);
@@ -661,6 +702,27 @@ function App() {
     setSearchOpen(true);
     setSearchFocusNonce((n) => n + 1);
   }, [warpReturn]);
+
+  // Leave file-history mode, restoring the view it was entered from (so exiting
+  // a history opened from all-repos lands back on all-repos, not the single
+  // repo file-history forced). Falls back to just dropping the file scope when
+  // there's nothing captured.
+  const exitFileHistory = useCallback(() => {
+    setFileHistory(null);
+    const r = fileHistoryReturn;
+    setFileHistoryReturn(null);
+    if (!r) return;
+    // Landing back on a DIFFERENT single repo: protect the restored branch
+    // selection from the per-repo disk restore (same one-shot flag warp uses).
+    if (r.repoPath && r.repoPath !== selectedRepoPathRef.current) {
+      suppressBranchRestoreRef.current = true;
+    }
+    setSelectedRepoPath(r.repoPath);
+    setSelectedRepoPaths(r.repoPaths);
+    setSelectedBranches(r.branches);
+    setWindowDays(r.windowDays);
+    setSelectedAuthors(r.authors);
+  }, [fileHistoryReturn]);
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
@@ -957,10 +1019,11 @@ function App() {
         e.preventDefault();
         return;
       }
-      // File history: Esc drops the file scope first (back to the repo's
-      // normal timeline); a second Esc then leaves single-repo mode.
+      // File history: Esc returns to the view it was opened from (all-repos,
+      // or the single repo you were in — where a second Esc then leaves
+      // single-repo mode as before).
       if (fileHistory) {
-        setFileHistory(null);
+        exitFileHistory();
         e.preventDefault();
         return;
       }
@@ -984,6 +1047,7 @@ function App() {
     fileHistory,
     closeSearch,
     returnToSearch,
+    exitFileHistory,
   ]);
 
   // Single-repo mode tallies authors from its (bounded) loaded commits;
@@ -1045,6 +1109,45 @@ function App() {
     return id != null && id > 0 ? [id] : null;
   }, [singleMode, repoIds, allRepos, selectedRepoPath]);
 
+  // Repos the search can actually run over: id is backfilled by listRepos, so
+  // id 0 (just-discovered, not yet resolved) can't be searched. The widen
+  // affordance only makes sense when more of these exist than the search
+  // already covers.
+  const usableRepoCount = useMemo(
+    () => allRepos.filter((r) => r.id > 0).length,
+    [allRepos],
+  );
+
+  // A human label for the search's repo scope, derived from the SAME resolved
+  // id set the search actually uses (searchRepoIds) — never the raw chip
+  // selection — so a zero-result miss names exactly what was searched and the
+  // count can't drift from reality. null = the search already spans every repo
+  // (whether by "all" or because a narrowed selection's ids haven't resolved),
+  // in which case the miss is an honest "not anywhere" with no scope to widen.
+  const searchScopeLabel = useMemo<string | null>(() => {
+    if (searchRepoIds == null) return null;
+    if (searchRepoIds.length === 1) {
+      const id = searchRepoIds[0];
+      return allRepos.find((r) => r.id === id)?.name ?? "1 repo";
+    }
+    return `${searchRepoIds.length} repos`;
+  }, [searchRepoIds, allRepos]);
+
+  // Only offer "Search all repos" when widening would genuinely broaden the
+  // scope — i.e. more usable repos exist than the search currently covers.
+  const canWidenSearch =
+    searchRepoIds != null && usableRepoCount > searchRepoIds.length;
+
+  // Widen a scoped search to every repo and let it re-run: drop single-repo
+  // mode and the RepoChip narrowing while keeping the query/search open.
+  const widenSearchScope = useCallback(() => {
+    setWarpReturn(null);
+    setFileHistory(null);
+    setFileHistoryReturn(null);
+    setSelectedRepoPath(null);
+    setSelectedRepoPaths("all");
+  }, []);
+
   // Manual chip changes invalidate the warp back-stack (the user has
   // navigated on their own — Esc should not yank them to an old view).
   const changeWindowDays = useCallback((v: WindowDays) => {
@@ -1058,11 +1161,13 @@ function App() {
   const changeRepoPath = useCallback((p: string | null) => {
     setWarpReturn(null);
     setFileHistory(null); // picking a repo leaves the file-history scope
+    setFileHistoryReturn(null);
     setSelectedRepoPath(p);
   }, []);
   const changeRepoPaths = useCallback((ps: string[] | "all") => {
     setWarpReturn(null);
     setFileHistory(null);
+    setFileHistoryReturn(null);
     setSelectedRepoPaths(ps);
   }, []);
 
@@ -1142,7 +1247,7 @@ function App() {
             <button
               type="button"
               className="filehist-chip"
-              onClick={() => setFileHistory(null)}
+              onClick={exitFileHistory}
               title={`History of ${fileHistory.filePath} — click to exit (Esc)`}
             >
               <span className="filehist-chip-icon" aria-hidden="true">
@@ -1353,6 +1458,23 @@ function App() {
         </div>
       )}
       <section className="panel-body">
+        {!firstRunTipSeen && !searching && !fileHistory && allRepos.length > 0 && (
+          <div className="firstrun-tip">
+            <span className="firstrun-tip-text">
+              <kbd>/</kbd> search · click a commit to expand · the 🕘 on a file
+              opens its history · right-click to copy for AI
+            </span>
+            <button
+              type="button"
+              className="firstrun-tip-dismiss"
+              aria-label="Dismiss tip"
+              title="Got it"
+              onClick={dismissFirstRunTip}
+            >
+              ✕
+            </button>
+          </div>
+        )}
         {allRepos.length === 0 && !singleMode ? (
           <EmptyDropPanel
             scanning={scanning}
@@ -1377,11 +1499,37 @@ function App() {
             searchControlRef={searchControlRef}
             onResultCount={setSearchCount}
             onSelectRepo={changeRepoPath}
+            searchScopeLabel={searchScopeLabel}
+            onWidenSearch={canWidenSearch ? widenSearchScope : undefined}
           />
         ) : singleMode ? (
           filteredCommits == null ? (
             <p className="panel-empty">Loading commits…</p>
           ) : filteredCommits.length === 0 ? (
+            fileHistory ? (
+              // File-history mode owns its empty state — the time/author/
+              // branch buttons below would be dead ends here. Name the file
+              // and offer the one real way out.
+              <div className="panel-empty">
+                <p className="panel-empty-line">
+                  No history found for{" "}
+                  <code className="panel-empty-file">
+                    {fileHistory.filePath.split("/").pop()}
+                  </code>{" "}
+                  in this repo.
+                </p>
+                <p className="panel-empty-sub">Renames aren't followed yet.</p>
+                <p className="panel-empty-actions">
+                  <button
+                    type="button"
+                    className="panel-empty-action"
+                    onClick={exitFileHistory}
+                  >
+                    Exit file history
+                  </button>
+                </p>
+              </div>
+            ) : (
             // Filter-aware empty state — name the filter hiding the
             // commits and offer the one-click way out, instead of making
             // the user debug the time/author/branch filter stack.
@@ -1435,6 +1583,7 @@ function App() {
                 </button>
               </p>
             </div>
+            )
           ) : (
             <Timeline
               key={`single:${selectedRepoPath}`}

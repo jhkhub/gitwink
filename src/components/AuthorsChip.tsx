@@ -177,6 +177,7 @@ export function AuthorsChip({
       onToggle={onToggle}
       onClose={onClose}
       align="right"
+      active={selected !== "all"}
     >
       <div className="chip-search">
         <input

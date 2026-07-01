@@ -12,6 +12,8 @@ import {
   WHOLE_FILE_CONTEXT,
   type DiffOpenPayload,
 } from "../lib/ipc";
+import { FILE_STATUS_BADGES } from "../lib/changedFileBadge";
+import { fileMenuItems } from "../lib/commitClipboard";
 import { getDiffSelectionRange, refLineWithFile } from "../lib/smartcopy";
 import type { ChangedFile } from "../types";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
@@ -68,18 +70,37 @@ function loadScrollLock(): boolean {
   return window.localStorage.getItem(SCROLL_LOCK_KEY) !== "0";
 }
 
+/** The diff-context choice (±3 / ±25 / Full) persists across files and
+ * sessions, like the scroll lock — picking "Full" once shouldn't reset to ±3
+ * on the next file. Oversized files are still clamped at render time via
+ * `effectiveContext`, so a carried-over "Full" never fires a huge fetch. */
+const CONTEXT_KEY = "gitwink.diffContext";
+function loadContext(): number {
+  if (typeof window === "undefined") return 3;
+  const v = parseInt(window.localStorage.getItem(CONTEXT_KEY) ?? "", 10);
+  return v === 3 || v === 25 || v === WHOLE_FILE_CONTEXT ? v : 3;
+}
+
 export function DiffApp() {
   const [ctx, setCtx] = useState<DiffOpenPayload | null>(null);
   const [files, setFiles] = useState<ChangedFile[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [diffText, setDiffText] = useState<string | null>(null);
+  // A real diff-fetch failure, kept SEPARATE from diffText so an error never
+  // gets parsed as a (zero-hunk) patch and rendered as a misleading
+  // "No textual diff." When set, the main pane shows an honest error block.
+  const [diffError, setDiffError] = useState<string | null>(null);
   // Unified-diff context lines for the selected file. 3 = default hunk
   // view; the header toggle bumps it to expand context or show the whole
   // file. Persists across file switches so "Full" stays on if chosen.
-  const [context, setContext] = useState<number>(3);
+  const [context, setContext] = useState<number>(loadContext);
   // Which (repo,hash) the loaded `files` metadata belongs to, so the
   // text-diff effect never fetches using a previous commit's metadata.
   const [filesCtx, setFilesCtx] = useState<string | null>(null);
+  // True when changedFiles() for the current commit FAILED (vs. a commit that
+  // genuinely changed nothing) — lets the sidebar tell those two apart instead
+  // of sitting on "Loading files…" forever.
+  const [filesError, setFilesError] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -95,6 +116,14 @@ export function DiffApp() {
       } catch {}
       return next;
     });
+  }
+
+  // Pick a diff-context level and remember it across files/sessions.
+  function chooseContext(v: number) {
+    setContext(v);
+    try {
+      window.localStorage.setItem(CONTEXT_KEY, String(v));
+    } catch {}
   }
 
   useEffect(() => {
@@ -146,17 +175,20 @@ export function DiffApp() {
     // the previous commit's files while this loads.
     setFiles([]);
     setFilesCtx(null);
+    setFilesError(false);
     (async () => {
       try {
         const fs = await changedFiles(ctx.repoPath, ctx.hash);
         if (!cancelled) {
           setFiles(fs);
           setFilesCtx(key);
+          setFilesError(false);
         }
       } catch {
         if (!cancelled) {
           setFiles([]);
           setFilesCtx(key);
+          setFilesError(true);
         }
       }
     })();
@@ -185,16 +217,15 @@ export function DiffApp() {
   const effectiveContext =
     context === WHOLE_FILE_CONTEXT && isFullTooBig ? 25 : context;
 
-  // Reset to the default context when a different commit is opened. Keyed on
-  // repoPath+hash because all-repos identity is repoPath:hash (two repos can
-  // share a commit hash).
-  useEffect(() => {
-    setContext(3);
-  }, [ctx?.repoPath, ctx?.hash]);
+  // (No per-commit context reset: the chosen level persists across files and
+  // sessions via chooseContext/loadContext; effectiveContext clamps oversized
+  // files so a carried-over "Full" stays safe.)
 
   // Only fetch text diff if it's worth rendering.
   useEffect(() => {
     if (!ctx || !selectedFile) return;
+    // A fresh file / commit / context starts from a clean error slate.
+    setDiffError(null);
     // Wait until `files` metadata for THIS commit has loaded — otherwise we'd
     // fetch a (possibly Full-context) text diff for a file we don't yet know
     // is binary or oversized.
@@ -225,7 +256,7 @@ export function DiffApp() {
         );
         if (!cancelled) setDiffText(txt);
       } catch (e) {
-        if (!cancelled) setDiffText(`Error: ${String(e)}`);
+        if (!cancelled) setDiffError(String(e));
       }
     })();
     return () => {
@@ -246,27 +277,35 @@ export function DiffApp() {
     const target = e.target as HTMLElement;
     if (target.closest('input, textarea, [contenteditable="true"]')) return;
     e.preventDefault();
-    // Custom menu belongs to the diff content only — right-clicking the
-    // header or file sidebar shows nothing (native menu stays suppressed).
-    if (!target.closest(".diff-main")) return;
     if (!ctx) return;
-    const selection = window.getSelection()?.toString() ?? "";
-    const range = getDiffSelectionRange();
+
+    // The menu opens over the diff content OR a sidebar file row. A
+    // right-clicked row names its own file; over the content the subject is
+    // the file currently shown. The header opens nothing (the native menu
+    // stays suppressed by the preventDefault above).
+    const rowEl = target.closest<HTMLElement>(
+      ".diff-file-wrap[data-file-path]",
+    );
+    const inMain = !!target.closest(".diff-main");
+    if (!rowEl && !inMain) return;
+    const fileForMenu = rowEl?.dataset.filePath ?? selectedFile;
+
     const items: MenuItem[] = [];
 
+    // Selection section — only meaningful over the rendered diff text.
+    const selection = inMain ? window.getSelection()?.toString() ?? "" : "";
     if (selection) {
-      items.push({
-        label: "Copy",
-        onClick: () => void writeText(selection),
-      });
-      if (selectedFile) {
+      const range = getDiffSelectionRange();
+      items.push({ label: "Copy", onClick: () => void writeText(selection) });
+      if (fileForMenu) {
+        const file = fileForMenu;
         items.push({
           label: "Copy with reference",
           onClick: () => {
             const ref = refLineWithFile(
               ctx.repoName,
               ctx.shortHash,
-              selectedFile,
+              file,
               range?.start ?? null,
               range?.end ?? null,
             );
@@ -277,12 +316,39 @@ export function DiffApp() {
       items.push({ divider: true });
     }
 
-    if (selectedFile) {
-      items.push({
-        label: "Copy file path",
-        onClick: () => void writeText(selectedFile),
-      });
+    // File section — history + path for the file under the cursor.
+    const fileItems = fileMenuItems(ctx.repoPath, fileForMenu ?? null);
+    if (fileItems.length) {
+      items.push(...fileItems);
+      // Copy the patch the user is reading — diff window only, and only for
+      // the file actually shown (we hold no other file's diff text). Prefixed
+      // with the same reference header as "Copy with reference" so it drops
+      // straight into a chat prompt.
+      if (
+        selectedFile &&
+        fileForMenu === selectedFile &&
+        diffText &&
+        diffText.trim() &&
+        !isImage &&
+        !isBinary
+      ) {
+        const patch = diffText;
+        const header = refLineWithFile(
+          ctx.repoName,
+          ctx.shortHash,
+          selectedFile,
+          null,
+          null,
+        );
+        items.push({
+          label: "Copy file diff",
+          onClick: () => void writeText(`${header}\n${patch}`),
+        });
+      }
+      items.push({ divider: true });
     }
+
+    // Commit section.
     items.push({
       label: "Copy short hash",
       onClick: () => void writeText(ctx.shortHash),
@@ -331,7 +397,7 @@ export function DiffApp() {
                       (effectiveContext === o.value ? " active" : "")
                     }
                     disabled={disabled}
-                    onClick={() => setContext(o.value)}
+                    onClick={() => chooseContext(o.value)}
                     title={
                       disabled ? "File too large for full context" : o.title
                     }
@@ -359,25 +425,37 @@ export function DiffApp() {
       </header>
       <div className="diff-body">
         <aside className="diff-sidebar">
-          {files.length === 0 ? (
+          {filesCtx !== `${ctx.repoPath}:${ctx.hash}` ? (
             <div className="diff-sidebar-empty">Loading files…</div>
+          ) : filesError ? (
+            <div className="diff-sidebar-empty">
+              Couldn't load this commit's files.
+            </div>
+          ) : files.length === 0 ? (
+            <div className="diff-sidebar-empty">No changed files.</div>
           ) : (
             files.map((f) => {
               const isSel = f.path === selectedFile;
               const slash = f.path.lastIndexOf("/");
               const dir = slash >= 0 ? f.path.slice(0, slash + 1) : "";
               const name = slash >= 0 ? f.path.slice(slash + 1) : f.path;
+              const badge =
+                FILE_STATUS_BADGES[f.status] ?? FILE_STATUS_BADGES.modified;
               return (
                 <div
                   key={f.path}
                   className={"diff-file-wrap" + (isSel ? " active" : "")}
+                  data-file-path={f.path}
                 >
                   <button
                     className={"diff-file" + (isSel ? " active" : "")}
                     onClick={() => setSelectedFile(f.path)}
-                    title={f.path}
+                    title={f.oldPath ? `Renamed from ${f.oldPath}` : f.path}
                   >
                     <div className="diff-file-line">
+                      <span className={"changed-file-badge " + badge.cls}>
+                        {badge.label}
+                      </span>
                       <span className="diff-file-name">{name}</span>
                       {f.isBinary && (
                         <span className="changed-file-bin" title="Binary file">
@@ -401,7 +479,16 @@ export function DiffApp() {
                         )}
                       </span>
                     </div>
-                    {dir && <div className="diff-file-dir">{dir}</div>}
+                    {(dir || f.oldPath) && (
+                      <div className="diff-file-dir">
+                        {f.oldPath && (
+                          <span className="changed-file-old">
+                            {f.oldPath} →{" "}
+                          </span>
+                        )}
+                        {dir}
+                      </div>
+                    )}
                   </button>
                   <button
                     className="diff-file-history"
@@ -419,6 +506,17 @@ export function DiffApp() {
         <main className="diff-main">
           {!selectedFile ? (
             <div className="diff-loading">Pick a file.</div>
+          ) : filesError ? (
+            // The commit's file list failed to load, so we have no metadata for
+            // this file — say so plainly instead of letting an empty diff read
+            // as "No textual diff." (i.e. "nothing changed"). Mirrors the
+            // sidebar's honest error.
+            <div className="binary-info">
+              <div className="binary-info-title">
+                Couldn't load this commit's files
+              </div>
+              <div className="binary-info-hint">The diff can't be shown.</div>
+            </div>
           ) : isImage ? (
             <ImageDiff
               repoPath={ctx.repoPath}
@@ -438,6 +536,11 @@ export function DiffApp() {
               <div className="binary-info-hint">
                 gitwink doesn't render diffs for non-image binaries yet.
               </div>
+            </div>
+          ) : diffError ? (
+            <div className="binary-info">
+              <div className="binary-info-title">Couldn't load this diff</div>
+              <div className="binary-info-hint">{diffError}</div>
             </div>
           ) : diffText == null ? (
             <div className="diff-loading">Loading diff…</div>

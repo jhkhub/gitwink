@@ -16,6 +16,9 @@ interface Props {
   disabled?: boolean;
   title?: string;
   align?: "left" | "right";
+  /** The chip is narrowing the view (a non-default filter). Paints a
+   *  persistent accent so a short/empty list's cause is one glance away. */
+  active?: boolean;
 }
 
 export function ChipDropdown({
@@ -28,6 +31,7 @@ export function ChipDropdown({
   disabled,
   title,
   align = "left",
+  active,
 }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -78,7 +82,12 @@ export function ChipDropdown({
     <div className="chip-wrap" data-chip={id} ref={ref}>
       <button
         type="button"
-        className={"chip" + (open ? " open" : "") + (disabled ? " disabled" : "")}
+        className={
+          "chip" +
+          (open ? " open" : "") +
+          (active ? " active" : "") +
+          (disabled ? " disabled" : "")
+        }
         onClick={() => {
           if (!disabled) onToggle();
         }}

@@ -1,22 +1,17 @@
 import { useEffect, useState } from "react";
 
-import { changedFiles as fetchChangedFiles } from "../lib/ipc";
-import type { ChangedFile, ChangedFileStatus } from "../types";
+import { FILE_STATUS_BADGES } from "../lib/changedFileBadge";
+import {
+  changedFiles as fetchChangedFiles,
+  openFileHistory,
+} from "../lib/ipc";
+import type { ChangedFile } from "../types";
 
 interface Props {
   repoPath: string;
   hash: string;
   onOpenDiff?: (file: ChangedFile) => void;
 }
-
-const BADGES: Record<ChangedFileStatus, { label: string; cls: string }> = {
-  new: { label: "NEW", cls: "badge-new" },
-  modified: { label: "MOD", cls: "badge-mod" },
-  renamed: { label: "REN", cls: "badge-ren" },
-  deleted: { label: "DEL", cls: "badge-del" },
-  copied: { label: "CP", cls: "badge-cp" },
-  typechange: { label: "TYPE", cls: "badge-type" },
-};
 
 export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
@@ -52,7 +47,7 @@ export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
   return (
     <div className="changed-files">
       {files.map((f, i) => {
-        const badge = BADGES[f.status] ?? BADGES.modified;
+        const badge = FILE_STATUS_BADGES[f.status] ?? FILE_STATUS_BADGES.modified;
         const slash = f.path.lastIndexOf("/");
         const dir = slash >= 0 ? f.path.slice(0, slash + 1) : "";
         const name = slash >= 0 ? f.path.slice(slash + 1) : f.path;
@@ -93,6 +88,20 @@ export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
                 </>
               )}
             </span>
+            <button
+              type="button"
+              className="changed-file-history"
+              title={`Show history of ${name}`}
+              aria-label={`Show history of ${name}`}
+              // stopPropagation so opening history doesn't also open the diff
+              // (the row click does that).
+              onClick={(e) => {
+                e.stopPropagation();
+                void openFileHistory(repoPath, f.path);
+              }}
+            >
+              🕘
+            </button>
           </div>
         );
       })}

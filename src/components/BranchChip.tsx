@@ -303,6 +303,7 @@ export function BranchChip({
       open={open}
       onToggle={onToggle}
       onClose={onClose}
+      active={selected !== "all"}
     >
       <div className="chip-search">
         <input

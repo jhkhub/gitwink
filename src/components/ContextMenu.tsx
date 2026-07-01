@@ -2,6 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 export interface MenuItem {
   label?: string;
+  /** Accessible name override. Set when the visible label carries a
+   *  decorative emoji a screen reader would otherwise announce. */
+  ariaLabel?: string;
   onClick?: () => void;
   disabled?: boolean;
   divider?: boolean;
@@ -71,6 +74,7 @@ export function ContextMenu({ items, x, y, onClose }: Props) {
             className={
               "context-menu-item" + (item.disabled ? " disabled" : "")
             }
+            aria-label={item.ariaLabel}
             disabled={item.disabled}
             onClick={() => {
               if (item.disabled) return;

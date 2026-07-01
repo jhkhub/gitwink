@@ -29,6 +29,7 @@ import {
 } from "../lib/commitClipboard";
 import { computeLanes, type LaneEdge } from "../lib/lanes";
 import { openDiff, prefetchCommit } from "../lib/ipc";
+import { timeAgo } from "../lib/relativeTime";
 import { timelineRowH, useUiScale } from "../lib/settings";
 import type { BranchInfo, CommitSummary } from "../types";
 import { ChangedFiles } from "./ChangedFiles";
@@ -69,14 +70,6 @@ interface Props {
    *  draw a single spine linking each revision to the next older one —
    *  dashed, to signal the (untouching) commits bridged over. */
   linear?: boolean;
-}
-
-function timeAgo(unixSeconds: number): string {
-  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
-  if (diff < 60) return `${diff}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86_400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86_400)}d`;
 }
 
 /** Full local datetime for hover tooltips — 24-hour, 2-digit components in

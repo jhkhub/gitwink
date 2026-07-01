@@ -264,6 +264,7 @@ export function RepoChip({
       open={open}
       onToggle={onToggle}
       onClose={onClose}
+      active={selectedPath != null || selectedPaths !== "all"}
     >
       <div className="chip-search">
         <input

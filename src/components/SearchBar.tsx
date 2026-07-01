@@ -92,12 +92,14 @@ export function SearchBar({
           {count == null ? "…" : `${count} match${count === 1 ? "" : "es"}`}
         </span>
       )}
-      <span
-        className="search-bar-hint"
-        title="↑↓ select · Enter jump to its history · click a row to preview · Esc close"
-      >
-        ↵ jump
-      </span>
+      {count != null && count > 0 && (
+        <span
+          className="search-bar-hint"
+          title="↑↓ select · Enter jump to its history · click a row to preview · Esc close"
+        >
+          ↵ jump to history
+        </span>
+      )}
     </div>
   );
 }

@@ -32,6 +32,7 @@ import {
   prefetchCommit,
 } from "../lib/ipc";
 import { useTimelineWindow } from "../lib/useTimelineWindow";
+import { timeAgo } from "../lib/relativeTime";
 import { timelineRowH, useUiScale } from "../lib/settings";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
@@ -82,14 +83,13 @@ interface Props {
   searchControlRef?: React.MutableRefObject<SearchControl | null>;
   /** reports the filtered count (null while loading) — the bar's label */
   onResultCount?: (n: number | null) => void;
-}
-
-function timeAgo(unixSeconds: number): string {
-  const diff = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
-  if (diff < 60) return `${diff}s`;
-  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
-  if (diff < 86_400) return `${Math.floor(diff / 3600)}h`;
-  return `${Math.floor(diff / 86_400)}d`;
+  /** Search-miss scope: a label for the narrowed repo scope (a repo name or
+   *  "N repos"), or null when the search already spans all repos. When set, a
+   *  zero-result search names the scope and offers a one-click widen — so a
+   *  scoped miss can't be mistaken for "this commit doesn't exist". */
+  searchScopeLabel?: string | null;
+  /** Widen a scoped search to all repos and re-run the same query. */
+  onWidenSearch?: () => void;
 }
 
 function formatFullTime(unixSeconds: number): string {
@@ -132,6 +132,8 @@ export function TimelineWindowed({
   onWarp,
   searchControlRef,
   onResultCount,
+  searchScopeLabel,
+  onWidenSearch,
 }: Props) {
   const {
     rows,
@@ -771,10 +773,30 @@ export function TimelineWindowed({
       ) : status === "loading" && count === 0 ? (
         <p className="panel-empty">Loading commits…</p>
       ) : showEmpty && searchMode ? (
-        // Search miss — the scan-window scope is the honest caveat (an
-        // old commit can live outside the cache; a full SHA will get a
-        // direct-lookup fallback in a later phase).
-        <p className="panel-empty">No matches in scanned history.</p>
+        // Search miss. If the search was scoped to a subset of repos, the
+        // honest failure is "not in THIS scope" — name it and offer a
+        // one-click widen, so a scoped miss can't read as "no such commit".
+        // (An old commit can still live outside the scan window; a full-SHA
+        // direct-lookup fallback comes in a later phase.)
+        <div className="panel-empty">
+          <p className="panel-empty-line">
+            {searchScopeLabel
+              ? `No matches in ${searchScopeLabel}.`
+              : "No matches in scanned history."}
+          </p>
+          {searchScopeLabel && onWidenSearch && (
+            <p className="panel-empty-actions">
+              <button
+                type="button"
+                className="panel-empty-action"
+                onClick={onWidenSearch}
+                title="Re-run this search across every repo"
+              >
+                Search all repos
+              </button>
+            </p>
+          )}
+        </div>
       ) : showEmpty ? (
         <div className="panel-empty">
           <p className="panel-empty-line">
