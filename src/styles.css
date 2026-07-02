@@ -158,6 +158,49 @@ body,
   user-select: none;
   white-space: nowrap;
 }
+
+/* Explicit "fetch origin now" — sits right after the upstream badge. Spins
+   while the fetch runs; flashes ✓ / ! on the outcome, then decays to ↻. */
+.fetch-now-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  align-self: center;
+  /* Fixed width: ↻/✓/! have different advances — the neighbours must not
+     shift for the 2.6s result flash. */
+  width: calc(18px * var(--ui-scale, 1));
+  text-align: center;
+  padding: 0;
+  font-size: calc(12px * var(--ui-scale, 1));
+  line-height: 1;
+  opacity: 0.55;
+}
+.fetch-now-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+.fetch-now-btn.fetching {
+  opacity: 0.9;
+  animation: fetch-now-spin 0.9s linear infinite;
+  cursor: default;
+}
+.fetch-now-btn.failed {
+  color: rgba(200, 90, 60, 1);
+  opacity: 0.9;
+}
+@keyframes fetch-now-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-color-scheme: dark) {
+  .fetch-now-btn.failed {
+    color: rgba(255, 150, 110, 1);
+  }
+}
 .upstream-badge-synced {
   /* glyph-only when in sync — minimum footprint */
   padding: 0 calc(5px * var(--ui-scale, 1));
@@ -2322,6 +2365,94 @@ body,
   line-height: 1.45;
   height: 100%;
   display: flex;
+  /* Anchor for the Ctrl+F find bar overlay. */
+  position: relative;
+}
+
+/* ----- in-diff find (Ctrl+F) ----- */
+/* Floating bar, top-right over the columns — an overlay so opening it never
+   reflows the virtualized rows. */
+.sbs-find {
+  position: absolute;
+  top: calc(6px * var(--ui-scale, 1));
+  right: calc(24px * var(--ui-scale, 1));
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: calc(4px * var(--ui-scale, 1));
+  padding: calc(4px * var(--ui-scale, 1)) calc(7px * var(--ui-scale, 1));
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.14);
+  font-family: inherit;
+}
+
+.sbs-find-input {
+  width: calc(170px * var(--ui-scale, 1));
+  border: none;
+  outline: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: calc(12px * var(--ui-scale, 1));
+}
+
+.sbs-find-count {
+  font-size: calc(10px * var(--ui-scale, 1));
+  font-variant-numeric: tabular-nums;
+  opacity: 0.6;
+  min-width: 3ch;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.sbs-find-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: calc(11px * var(--ui-scale, 1));
+  line-height: 1;
+  padding: 0 calc(3px * var(--ui-scale, 1));
+  opacity: 0.6;
+}
+.sbs-find-btn:hover:not(:disabled) {
+  opacity: 1;
+}
+.sbs-find-btn:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* Match tints — one specificity step above the add/delete row tints
+   (.sbs-line.add etc., declared later in this file), so a find hit reads on
+   ANY row kind. The current hit adds an inset ring on top. */
+.sbs .sbs-line.sbs-find-hit,
+.sbs .sbs-hunk-header.sbs-find-hit {
+  background: rgba(240, 200, 60, 0.16);
+}
+.sbs .sbs-line.sbs-find-cur,
+.sbs .sbs-hunk-header.sbs-find-cur {
+  background: rgba(240, 200, 60, 0.3);
+  box-shadow: inset 0 0 0 1px rgba(200, 150, 20, 0.75);
+}
+
+@media (prefers-color-scheme: dark) {
+  .sbs-find {
+    background: #26262a;
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.5);
+  }
+  .sbs .sbs-line.sbs-find-hit,
+  .sbs .sbs-hunk-header.sbs-find-hit {
+    background: rgba(235, 195, 80, 0.14);
+  }
+  .sbs .sbs-line.sbs-find-cur,
+  .sbs .sbs-hunk-header.sbs-find-cur {
+    background: rgba(235, 195, 80, 0.26);
+    box-shadow: inset 0 0 0 1px rgba(235, 190, 90, 0.7);
+  }
 }
 
 .sbs-empty {
@@ -3347,27 +3478,38 @@ body,
   }
 }
 
-/* Header affordance back to the search a warp replaced (Esc). */
-.warp-back {
-  border: none;
+/* Unified view-history back/forward — a compact ‹ › pair in the header,
+   mirroring a browser's nav buttons. Disabled when that direction is empty. */
+.view-nav {
+  display: inline-flex;
   align-self: center;
-  background: rgba(80, 130, 240, 0.14);
-  border-radius: 10px;
-  color: inherit;
-  font: inherit;
-  font-size: calc(11px * var(--ui-scale, 1));
-  padding: 2px 8px;
-  cursor: pointer;
-  white-space: nowrap;
+  gap: calc(2px * var(--ui-scale, 1));
 }
 
-.warp-back:hover {
+.view-nav-btn {
+  border: none;
+  background: rgba(80, 130, 240, 0.14);
+  border-radius: 8px;
+  color: inherit;
+  font: inherit;
+  font-size: calc(13px * var(--ui-scale, 1));
+  line-height: 1;
+  padding: calc(2px * var(--ui-scale, 1)) calc(7px * var(--ui-scale, 1));
+  cursor: pointer;
+}
+
+.view-nav-btn:hover:not(:disabled) {
   background: rgba(80, 130, 240, 0.26);
 }
 
-/* File-history scope pill — same family as warp-back, amber to signal a
-   distinct "you're looking at one file's history" mode. Truncates the name so
-   a long path can't shove the other header controls off-screen. */
+.view-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* File-history scope pill — same visual family as the view-nav buttons, amber
+   to signal a distinct "you're looking at one file's history" mode. Truncates
+   the name so a long path can't shove the other header controls off-screen. */
 .filehist-chip {
   display: inline-flex;
   align-items: center;

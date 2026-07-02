@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { parseDiff } from "./diff";
-import { flattenDiff, longestLines } from "./diffView";
+import { flattenDiff, longestLines, searchDiffRows } from "./diffView";
 import { BASE_SBS_HEADER_H, BASE_SBS_LINE_H } from "./settings";
 
 /** Build a flat item list straight from unified-diff text. */
@@ -85,6 +85,32 @@ describe("flattenDiff", () => {
   it("context-only diff produces no change segments", () => {
     const { segments } = flatten(["@@ -1,2 +1,2 @@", " a", " b"].join("\n"));
     expect(segments).toHaveLength(0);
+  });
+});
+
+describe("searchDiffRows", () => {
+  it("matches either side, case-insensitively, returning row indices", () => {
+    const { items } = flatten(SIMPLE);
+    // "old line" only exists on the left of the replace row (index 2);
+    // "NEW" (case-folded) only on its right — both hit the same row.
+    expect(searchDiffRows(items, "old line")).toEqual([2]);
+    expect(searchDiffRows(items, "NEW")).toEqual([2]);
+    // "line" hits the replace row once (no duplicate for both sides).
+    expect(searchDiffRows(items, "line")).toEqual([2]);
+  });
+
+  it("matches hunk-header text and multiple rows in order", () => {
+    const { items } = flatten(SIMPLE);
+    expect(searchDiffRows(items, "@@")).toEqual([0]);
+    // "t" appears in ctx (1) and tail (3) — not in the old/new pair.
+    expect(searchDiffRows(items, "t")).toEqual([1, 3]);
+  });
+
+  it("empty / whitespace query matches nothing", () => {
+    const { items } = flatten(SIMPLE);
+    expect(searchDiffRows(items, "")).toEqual([]);
+    expect(searchDiffRows(items, "   ")).toEqual([]);
+    expect(searchDiffRows(items, "no-such-text")).toEqual([]);
   });
 });
 

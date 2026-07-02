@@ -335,6 +335,7 @@ pub fn run() {
             commands::set_auto_fetch_on_show,
             commands::ack_auto_fetch_notice,
             commands::maybe_fetch_repo,
+            commands::fetch_repo_now,
             commands::open_settings_file,
             commands::set_live_settings,
         ])

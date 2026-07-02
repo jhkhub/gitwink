@@ -85,6 +85,13 @@ export async function currentUpstreamStatus(
   });
 }
 
+/** Explicit user-initiated `git fetch origin` — bypasses the auto-fetch
+ * setting and cooldown, awaits completion. Resolves to "ok" | "failed" |
+ * "busy" (global concurrency cap full — try again in a moment). */
+export async function fetchRepoNow(repoPath: string): Promise<string> {
+  return invoke<string>("fetch_repo_now", { repoPath });
+}
+
 /** Add a repo by absolute path (drag-drop / paste). Backend validates
  * via git2::Repository::discover (so a sub-folder of a repo also works).
  * Throws on non-Git paths so the UI can show an inline error. On

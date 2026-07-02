@@ -23,6 +23,7 @@ import {
   currentUpstreamStatus,
   dismissPanel,
   explicitAddRepo,
+  fetchRepoNow,
   fileHistory as fetchFileHistory,
   getBranchSelection,
   getPinnedRepos,
@@ -152,13 +153,22 @@ function windowCovering(current: WindowDays, commitTs: number): WindowDays {
 }
 
 /** The view state a warp replaces — restored by Esc (back to search). */
-interface WarpReturn {
+/** A complete snapshot of the panel's view — everything that decides what the
+ *  timeline shows. The unified back/forward history is a stack of these. */
+interface ViewSnapshot {
   repoPath: string | null;
   repoPaths: string[] | "all";
   branches: string[] | "all";
   windowDays: WindowDays;
   authors: string[] | "all";
+  fileHistory: { repoPath: string; filePath: string } | null;
+  searchOpen: boolean;
+  searchInput: string;
 }
+
+/** Cap on each direction of the view-history stack — deep enough to never bite
+ *  in practice, bounded so a long session can't grow it without limit. */
+const VIEW_HISTORY_MAX = 50;
 
 /** Tolerant repo-path equality: the backend's cache key and the frontend's
  *  selected path can differ in separator (\ vs /) or case on Windows. */
@@ -210,6 +220,15 @@ function App() {
   // when refs move and stay cheap on a plain re-show.
   const [refsNonce, setRefsNonce] = useState(0);
 
+  // Explicit "fetch now" button state — idle → fetching → (ok|failed|busy),
+  // decaying back to idle so the glyph doesn't stick. Presentation is pinned
+  // to the repo that was actually fetched: switching repos resets to idle
+  // (below), and a resolving fetch for a repo you've left is dropped.
+  const [fetchNow, setFetchNow] = useState<
+    "idle" | "fetching" | "ok" | "failed" | "busy"
+  >("idle");
+  const fetchNowTimerRef = useRef<number | null>(null);
+
   // File-history scope: when set, single-repo mode shows the commits that
   // touched this file (a live capped walk), ignoring the branch/author/time
   // lenses. Cleared by the chip's ✕, Esc, or picking a different repo.
@@ -258,16 +277,14 @@ function App() {
       window.localStorage.setItem("gitwink.firstRunTipSeen", "1");
     } catch {}
   }, []);
-  // Warp = Enter on a result: land in that commit's single-repo history
-  // with the filters auto-corrected. `warpReturn` is the one-deep back
-  // stack (Esc → reopen the search), cleared by any manual chip change.
-  const [warpReturn, setWarpReturn] = useState<WarpReturn | null>(null);
-  // The view a file-history session was entered FROM, so exiting returns you
-  // there (e.g. back to all-repos) instead of stranding you in the single-repo
-  // scope file-history forced. Captured on the first 🕘 open, restored on exit.
-  const [fileHistoryReturn, setFileHistoryReturn] = useState<WarpReturn | null>(
-    null,
-  );
+  // Unified view history: a browser-style back/forward stack over the WHOLE
+  // view (repo scope, filters, file-history, search). Every discrete
+  // navigation (warp, file-history open, repo pick, scope widen) pushes the
+  // outgoing view onto `viewBack` and clears `viewFwd`; Alt+←/→, the header
+  // ◄►, the file-history chip, and Esc's back rung all step through it. This
+  // subsumes the old one-deep warp/file-history returns.
+  const [viewBack, setViewBack] = useState<ViewSnapshot[]>([]);
+  const [viewFwd, setViewFwd] = useState<ViewSnapshot[]>([]);
   const [warpAnchor, setWarpAnchor] = useState<{
     hash: string;
     nonce: number;
@@ -278,14 +295,18 @@ function App() {
   // handlers (which would otherwise close over a stale value).
   const selectedRepoPathRef = useRef<string | null>(null);
   selectedRepoPathRef.current = selectedRepoPath;
-  // Live snapshot of the current view, so the once-mounted file-history
-  // listener (a stale closure) can capture the view it's replacing.
-  const viewRef = useRef<WarpReturn>({
+  // Live snapshot of the current view, so the history helpers (and the
+  // once-mounted file-history listener, a stale closure) can capture the view
+  // being replaced without threading every piece of state through deps.
+  const viewRef = useRef<ViewSnapshot>({
     repoPath: null,
     repoPaths: "all",
     branches: "all",
     windowDays: 7,
     authors: "all",
+    fileHistory: null,
+    searchOpen: false,
+    searchInput: "",
   });
   viewRef.current = {
     repoPath: selectedRepoPath,
@@ -293,6 +314,9 @@ function App() {
     branches: selectedBranches,
     windowDays,
     authors: selectedAuthors,
+    fileHistory,
+    searchOpen,
+    searchInput,
   };
   // One-shot: a warp just switched repos and forced "all branches" — the
   // branch-selection effect must not re-apply the repo's saved selection
@@ -457,12 +481,10 @@ function App() {
       // sees `fileHistory` and fetches the file's history instead.
       unFileHistory = await onFileHistoryOpen((p) => {
         if (!mounted) return;
-        // Remember where we came from — but only the FIRST time, so opening a
-        // second file's history from within file-history mode still returns to
-        // the original pre-history view.
-        setFileHistoryReturn((prev) => prev ?? viewRef.current);
+        // Record the view we're leaving so back returns to it (works even when
+        // opening a second file's history from within file-history mode).
+        pushView();
         setSearchOpen(false);
-        setWarpReturn(null);
         setSelectedRepoPath(p.repoPath);
         setFileHistory({ repoPath: p.repoPath, filePath: p.filePath });
         setRefreshNonce((n) => n + 1);
@@ -643,7 +665,9 @@ function App() {
   // thing.
   const handleBranchChange = useCallback(
     (sel: string[] | "all") => {
-      setWarpReturn(null); // manual chip change = the warp back-stack is stale
+      // A filter tweak refines the current view (no new history entry) but
+      // diverges from any forward history — drop it.
+      setViewFwd([]);
       setSelectedBranches(sel);
       if (selectedRepoPath) {
         void saveBranchSelection(selectedRepoPath, sel === "all" ? [] : sel);
@@ -652,22 +676,73 @@ function App() {
     [selectedRepoPath],
   );
 
-  // ----- search → warp → back -----
-  // Warp: land in the commit's single-repo history with the filters
-  // auto-corrected — branches "all" (the commit may live on any ref),
-  // authors cleared (its neighbourhood is everyone's work), time window
-  // widened just enough to cover it. The replaced view goes on the
-  // one-deep back stack.
+  // ----- unified view history: back / forward -----
+  // Record the current view before a navigation replaces it. A fresh
+  // navigation truncates any forward history (browser semantics).
+  const pushView = useCallback(() => {
+    setViewBack((b) => [...b, viewRef.current].slice(-VIEW_HISTORY_MAX));
+    setViewFwd([]);
+  }, []);
+
+  // Restore a snapshot. Branch handling on a repo change is subtle:
+  //  - snapshot wants "all" (a warp forced it, or the user picked all): force
+  //    it via suppressBranchRestoreRef so the per-repo disk selection can't
+  //    re-hide the commit the "all" was protecting;
+  //  - snapshot wants a specific selection: let the per-repo branch effect
+  //    restore that repo's saved selection from disk (which is what a specific
+  //    snapshot recorded anyway).
+  // Same-repo restores don't fire that effect, so setSelectedBranches below
+  // applies directly. (v.repoPath != null guard: an all-repos restore has no
+  // branch scope, and suppressing there would dangle the flag.)
+  const applyView = useCallback((v: ViewSnapshot) => {
+    if (
+      v.branches === "all" &&
+      v.repoPath != null &&
+      v.repoPath !== selectedRepoPathRef.current
+    ) {
+      suppressBranchRestoreRef.current = true;
+    }
+    setWarpAnchor(null);
+    setSelectedRepoPath(v.repoPath);
+    setSelectedRepoPaths(v.repoPaths);
+    setSelectedBranches(v.branches);
+    setWindowDays(v.windowDays);
+    setSelectedAuthors(v.authors);
+    setFileHistory(v.fileHistory);
+    setSearchOpen(v.searchOpen);
+    setSearchInput(v.searchInput);
+    if (v.searchOpen) setSearchFocusNonce((n) => n + 1);
+  }, []);
+
+  const goBack = useCallback(() => {
+    if (viewBack.length === 0) return;
+    const target = viewBack[viewBack.length - 1];
+    setViewFwd((f) => [viewRef.current, ...f].slice(0, VIEW_HISTORY_MAX));
+    setViewBack((b) => b.slice(0, -1));
+    applyView(target);
+  }, [viewBack, applyView]);
+
+  const goForward = useCallback(() => {
+    if (viewFwd.length === 0) return;
+    const target = viewFwd[0];
+    setViewBack((b) => [...b, viewRef.current].slice(-VIEW_HISTORY_MAX));
+    setViewFwd((f) => f.slice(1));
+    applyView(target);
+  }, [viewFwd, applyView]);
+
+  // Leave file-history mode = go back one view (file-history opens always push
+  // first, so back lands on the pre-history view). Kept as a named handler for
+  // the chip / button / empty-state exit.
+  const exitFileHistory = goBack;
+
+  // Warp: push the current view, then land in the commit's single-repo history
+  // with the filters auto-corrected — branches "all" (the commit may live on
+  // any ref), authors cleared, time window widened just enough to cover it.
   const performWarp = useCallback(
     (c: CommitSummary) => {
-      setWarpReturn({
-        repoPath: selectedRepoPath,
-        repoPaths: selectedRepoPaths,
-        branches: selectedBranches,
-        windowDays,
-        authors: selectedAuthors,
-      });
-      suppressBranchRestoreRef.current = c.repoPath !== selectedRepoPath;
+      pushView();
+      suppressBranchRestoreRef.current =
+        c.repoPath !== selectedRepoPathRef.current;
       setSelectedRepoPath(c.repoPath);
       setSelectedBranches("all");
       setSelectedAuthors("all");
@@ -677,52 +752,45 @@ function App() {
       warpNonceRef.current += 1;
       setWarpAnchor({ hash: c.hash, nonce: warpNonceRef.current });
     },
-    [
-      selectedRepoPath,
-      selectedRepoPaths,
-      selectedBranches,
-      windowDays,
-      selectedAuthors,
-    ],
+    [pushView],
   );
 
-  // Esc from a warped view: restore the replaced view and reopen the
-  // search bar with its query intact (the next Esc closes that too).
-  const returnToSearch = useCallback(() => {
-    const w = warpReturn;
-    if (!w) return;
-    suppressBranchRestoreRef.current = false;
-    setWarpReturn(null);
-    setWarpAnchor(null);
-    setSelectedRepoPath(w.repoPath);
-    setSelectedRepoPaths(w.repoPaths);
-    setSelectedBranches(w.branches);
-    setWindowDays(w.windowDays);
-    setSelectedAuthors(w.authors);
-    setSearchOpen(true);
-    setSearchFocusNonce((n) => n + 1);
-  }, [warpReturn]);
-
-  // Leave file-history mode, restoring the view it was entered from (so exiting
-  // a history opened from all-repos lands back on all-repos, not the single
-  // repo file-history forced). Falls back to just dropping the file scope when
-  // there's nothing captured.
-  const exitFileHistory = useCallback(() => {
-    setFileHistory(null);
-    const r = fileHistoryReturn;
-    setFileHistoryReturn(null);
-    if (!r) return;
-    // Landing back on a DIFFERENT single repo: protect the restored branch
-    // selection from the per-repo disk restore (same one-shot flag warp uses).
-    if (r.repoPath && r.repoPath !== selectedRepoPathRef.current) {
-      suppressBranchRestoreRef.current = true;
+  // Explicit fetch: await the backend one-shot, then bump refsNonce so the
+  // upstream badge re-pulls (fetch-age → fresh, ↑↓ recomputed). The result
+  // glyph decays back to idle after a beat. Reads the repo via the live ref
+  // so a stale closure can't fetch a previously-viewed repo — and the RESULT
+  // only lands if that repo is still the one on screen (a ✓ must never claim
+  // freshness for a repo that wasn't fetched).
+  const runFetchNow = useCallback(async () => {
+    const repo = selectedRepoPathRef.current;
+    if (!repo) return;
+    // A newer run owns the glyph — a previous run's decay timer must not
+    // wipe this run's result early.
+    if (fetchNowTimerRef.current != null) {
+      window.clearTimeout(fetchNowTimerRef.current);
+      fetchNowTimerRef.current = null;
     }
-    setSelectedRepoPath(r.repoPath);
-    setSelectedRepoPaths(r.repoPaths);
-    setSelectedBranches(r.branches);
-    setWindowDays(r.windowDays);
-    setSelectedAuthors(r.authors);
-  }, [fileHistoryReturn]);
+    setFetchNow("fetching");
+    let res: string;
+    try {
+      res = await fetchRepoNow(repo);
+    } catch {
+      res = "failed";
+    }
+    const current = selectedRepoPathRef.current;
+    if (current == null || !samePath(current, repo)) return; // repo left — drop
+    setFetchNow(res === "ok" ? "ok" : res === "busy" ? "busy" : "failed");
+    if (res === "ok") setRefsNonce((n) => n + 1);
+    fetchNowTimerRef.current = window.setTimeout(() => {
+      fetchNowTimerRef.current = null;
+      setFetchNow((s) => (s === "fetching" ? s : "idle"));
+    }, 2600);
+  }, []);
+
+  // Repo switch: whatever the button was showing belonged to the old repo.
+  useEffect(() => {
+    setFetchNow("idle");
+  }, [selectedRepoPath]);
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
@@ -990,43 +1058,46 @@ function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [updateModal, openSearch]);
 
-  // ----- ESC layer cascade: chip → expansion (in Timeline) → search →
-  // warp-return → single-repo → hide panel -----
+  // ----- view-history keys + ESC cascade -----
+  // Alt+←/→ step through the unified view history. Esc: modal → chip →
+  // expansion (handled in Timeline) → search → view-back → single-repo →
+  // hide panel. The single "view-back" rung subsumes the old warp-return /
+  // file-history-exit rungs (both pushed a view when they navigated).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
-      // The update modal is the top-most layer — close it first.
+      // Top layers own the keyboard: the modal closes on Esc, a dropdown
+      // handles its own Esc — neither should let view-nav keys churn the
+      // timeline underneath.
       if (updateModal) {
-        setUpdateModal(null);
-        e.preventDefault();
+        if (e.key === "Escape") {
+          setUpdateModal(null);
+          e.preventDefault();
+        }
         return;
       }
-      if (openChip != null) return; // dropdown handles its own Esc
-      // Timeline's Esc handler stopImmediatePropagation()s if an
-      // expansion is open, so by the time we get here neither a
-      // dropdown nor an expansion needs Esc. (The search input's own Esc
-      // is also stopPropagation'd — this branch covers Esc pressed while
-      // focus is on the result list.)
+      if (openChip != null) return;
+      if (e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") goBack();
+        else goForward();
+        return;
+      }
+      if (e.key !== "Escape") return;
+      // The search input's own Esc is stopPropagation'd; this covers Esc while
+      // focus is on the result list.
       if (searchOpen) {
         closeSearch();
         e.preventDefault();
         return;
       }
-      // A warped view: Esc goes BACK (restore the replaced view + reopen
-      // the search), not out of single-repo mode.
-      if (warpReturn) {
-        returnToSearch();
+      // Step back through view history (a warp, file-history open, or repo
+      // pick each pushed a view).
+      if (viewBack.length > 0) {
+        goBack();
         e.preventDefault();
         return;
       }
-      // File history: Esc returns to the view it was opened from (all-repos,
-      // or the single repo you were in — where a second Esc then leaves
-      // single-repo mode as before).
-      if (fileHistory) {
-        exitFileHistory();
-        e.preventDefault();
-        return;
-      }
+      // No history left but still scoped to one repo — leave single-repo mode.
       if (singleMode) {
         setSelectedRepoPath(null);
         e.preventDefault();
@@ -1043,11 +1114,11 @@ function App() {
     singleMode,
     updateModal,
     searchOpen,
-    warpReturn,
-    fileHistory,
+    viewBack,
+    viewFwd,
     closeSearch,
-    returnToSearch,
-    exitFileHistory,
+    goBack,
+    goForward,
   ]);
 
   // Single-repo mode tallies authors from its (bounded) loaded commits;
@@ -1138,38 +1209,44 @@ function App() {
   const canWidenSearch =
     searchRepoIds != null && usableRepoCount > searchRepoIds.length;
 
-  // Widen a scoped search to every repo and let it re-run: drop single-repo
-  // mode and the RepoChip narrowing while keeping the query/search open.
+  // Widen a scoped search to every repo and let it re-run: a real navigation
+  // (records the scoped view so back returns to it), dropping single-repo mode
+  // and the RepoChip narrowing while keeping the query/search open.
   const widenSearchScope = useCallback(() => {
-    setWarpReturn(null);
+    pushView();
     setFileHistory(null);
-    setFileHistoryReturn(null);
     setSelectedRepoPath(null);
     setSelectedRepoPaths("all");
-  }, []);
+  }, [pushView]);
 
-  // Manual chip changes invalidate the warp back-stack (the user has
-  // navigated on their own — Esc should not yank them to an old view).
+  // Time/author changes refine the current view in place — no new history
+  // entry, but they diverge from any forward history, so drop it.
   const changeWindowDays = useCallback((v: WindowDays) => {
-    setWarpReturn(null);
+    setViewFwd([]);
     setWindowDays(v);
   }, []);
   const changeAuthors = useCallback((v: string[] | "all") => {
-    setWarpReturn(null);
+    setViewFwd([]);
     setSelectedAuthors(v);
   }, []);
-  const changeRepoPath = useCallback((p: string | null) => {
-    setWarpReturn(null);
-    setFileHistory(null); // picking a repo leaves the file-history scope
-    setFileHistoryReturn(null);
-    setSelectedRepoPath(p);
-  }, []);
-  const changeRepoPaths = useCallback((ps: string[] | "all") => {
-    setWarpReturn(null);
-    setFileHistory(null);
-    setFileHistoryReturn(null);
-    setSelectedRepoPaths(ps);
-  }, []);
+  // Picking a repo IS a navigation — record the view we're leaving (and leave
+  // any file-history scope).
+  const changeRepoPath = useCallback(
+    (p: string | null) => {
+      pushView();
+      setFileHistory(null);
+      setSelectedRepoPath(p);
+    },
+    [pushView],
+  );
+  const changeRepoPaths = useCallback(
+    (ps: string[] | "all") => {
+      pushView();
+      setFileHistory(null);
+      setSelectedRepoPaths(ps);
+    },
+    [pushView],
+  );
 
   function togglePin(path: string) {
     setPinnedRepos((prev) => {
@@ -1233,15 +1310,29 @@ function App() {
           )}
         </div>
         <div className="header-chips">
-          {warpReturn && !searchOpen && (
-            <button
-              type="button"
-              className="warp-back"
-              onClick={returnToSearch}
-              title="Back to search results (Esc)"
-            >
-              ‹ search
-            </button>
+          {(viewBack.length > 0 || viewFwd.length > 0) && (
+            <span className="view-nav" role="group" aria-label="View history">
+              <button
+                type="button"
+                className="view-nav-btn"
+                onClick={goBack}
+                disabled={viewBack.length === 0}
+                title="Back (Alt+←)"
+                aria-label="Back"
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                className="view-nav-btn"
+                onClick={goForward}
+                disabled={viewFwd.length === 0}
+                title="Forward (Alt+→)"
+                aria-label="Forward"
+              >
+                ›
+              </button>
+            </span>
           )}
           {fileHistory && (
             <button
@@ -1317,6 +1408,45 @@ function App() {
           )}
           {singleMode && upstream && !fileHistory && (
             <UpstreamBadge status={upstream} />
+          )}
+          {/* Fetch button is NOT gated on the upstream badge — a local-only
+              branch with no upstream is exactly where a manual fetch is
+              needed (origin absence just fails fast → "!"). */}
+          {singleMode && !fileHistory && (
+            <button
+              type="button"
+              className={
+                "fetch-now-btn" +
+                (fetchNow === "fetching" ? " fetching" : "") +
+                (fetchNow === "failed" || fetchNow === "busy" ? " failed" : "")
+              }
+              disabled={fetchNow === "fetching"}
+              onClick={() => void runFetchNow()}
+              aria-label={
+                fetchNow === "fetching"
+                  ? "Fetching origin"
+                  : fetchNow === "ok"
+                    ? "Fetched — origin refs are current"
+                    : fetchNow === "busy"
+                      ? "Another fetch is running"
+                      : fetchNow === "failed"
+                        ? "Fetch failed"
+                        : "Fetch origin now"
+              }
+              title={
+                fetchNow === "fetching"
+                  ? "Fetching origin…"
+                  : fetchNow === "ok"
+                    ? "Fetched ✓ — origin refs are current"
+                    : fetchNow === "busy"
+                      ? "Another fetch is running — try again in a moment"
+                      : fetchNow === "failed"
+                        ? "Fetch failed (offline? no origin? another fetch mid-flight?) — counts reflect the last successful fetch"
+                        : "Fetch origin now — refresh against the remote (read-only; never merges or pushes)"
+              }
+            >
+              {fetchNow === "ok" ? "✓" : fetchNow === "failed" || fetchNow === "busy" ? "!" : "↻"}
+            </button>
           )}
           {/* Time + author chips are view lenses — an active search
               bypasses them (dimmed to say so). The repo scope above

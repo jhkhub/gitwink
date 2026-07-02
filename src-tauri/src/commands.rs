@@ -1104,8 +1104,10 @@ pub fn ack_auto_fetch_notice(app: AppHandle) {
 /// Returns immediately; the fetch runs detached and its
 /// `refs/remotes/origin/*` + `FETCH_HEAD` update flows through the existing
 /// watcher → timeline refresh. Silent no-op when disabled / on cooldown /
-/// path empty. NOTE: this is the one place gitwink reaches a git remote —
-/// it never merges, pushes, or rewrites, so it cannot alter your work.
+/// path empty. NOTE: this and `fetch_repo_now` (the manual ↻ button) are the
+/// only places gitwink reaches a git remote — both run the same read-only
+/// one-shot; it never merges, pushes, or rewrites, so it cannot alter your
+/// work.
 #[tauri::command]
 pub fn maybe_fetch_repo(app: AppHandle, repo_path: String) {
     if repo_path.trim().is_empty() {
@@ -1131,8 +1133,37 @@ pub fn maybe_fetch_repo(app: AppHandle, repo_path: String) {
     };
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        crate::fetch::git_fetch_one_shot(&repo);
+        // Auto path: fire-and-forget — outcome intentionally ignored.
+        let _ = crate::fetch::git_fetch_one_shot(&repo);
     });
+}
+
+/// Explicit, user-initiated fetch — the ↻ button next to the upstream badge.
+/// Unlike `maybe_fetch_repo` this bypasses the `auto_fetch_on_show` setting
+/// (a manual click IS the alternative for people who turned auto off) and the
+/// per-repo cooldown (the user asked *now*), but still respects the global
+/// concurrency cap and stamps the cooldown so the next auto pass waits a full
+/// window. Runs the exact same hardened one-shot fetch, awaits completion,
+/// and reports: "ok" (git exited 0), "failed" (it didn't), "busy" (cap full).
+#[tauri::command]
+pub async fn fetch_repo_now(app: AppHandle, repo_path: String) -> Result<String, String> {
+    if repo_path.trim().is_empty() {
+        return Err("empty repo path".into());
+    }
+    let Some(cooldown) = app.try_state::<crate::fetch::FetchCooldown>() else {
+        return Err("fetch state unavailable".into());
+    };
+    let repo = std::path::PathBuf::from(&repo_path);
+    let Some(guard) = cooldown.claim_forced(&repo) else {
+        return Ok("busy".into());
+    };
+    let ok = tauri::async_runtime::spawn_blocking(move || {
+        let _guard = guard;
+        crate::fetch::git_fetch_one_shot(&repo)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(if ok { "ok".into() } else { "failed".into() })
 }
 
 /// Reveal `settings.json` in the user's default editor (or the OS file

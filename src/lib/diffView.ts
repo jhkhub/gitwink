@@ -88,6 +88,29 @@ export function flattenDiff(hunks: DiffHunk[]): {
   return { items, segments };
 }
 
+/** Case-insensitive find over the flattened rows — the columns are
+ * virtualized, so the browser's native Ctrl+F can't see off-screen rows; this
+ * searches the item list directly. A row matches when either side's text (or
+ * a hunk header's text) contains the query. Returns ascending row indices;
+ * empty for an empty/whitespace query. */
+export function searchDiffRows(items: Item[], query: string): number[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const out: number[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    if (it.kind === "header") {
+      if (it.text.toLowerCase().includes(q)) out.push(i);
+    } else if (
+      it.left.text.toLowerCase().includes(q) ||
+      it.right.text.toLowerCase().includes(q)
+    ) {
+      out.push(i);
+    }
+  }
+  return out;
+}
+
 /** Longest line per side — rendered as a hidden in-flow probe so each column's
  * track keeps a stable horizontal width as the vertical window slides (only a
  * handful of rows are mounted, so without this the h-scrollbar would jump).

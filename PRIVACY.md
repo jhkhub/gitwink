@@ -49,7 +49,7 @@ that folder removes them.
 gitwink has no account, no telemetry, no analytics, and no advertising, and
 it sends no information about you or your repositories to us. The only network
 activity it initiates is two features — both to services you already use, and
-both easily turned off:
+both under your control:
 
 1. **App update check** — gitwink may contact GitHub to see whether a newer
    release is available and, if you choose to update, to download it. These
@@ -57,17 +57,18 @@ both easily turned off:
    [GitHub's Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement);
    no information about you or your repositories is included in them. Set the
    update checker to manual or off in `settings.json`.
-2. **Auto-fetch on panel open** _(on by default)_ — when you're viewing a
-   single repository, gitwink runs a quiet `git fetch` as the panel opens, so a
-   teammate's just-pushed commit shows up. It uses your system `git` and your
-   existing Git credentials, pinned to that repository's `origin` remote with a
-   branch-only refspec — gitwink adds no destination of its own and sends
-   nothing beyond what a normal fetch negotiates (e.g. which commit IDs you
-   already have). Locally it updates only the remote-tracking mirror
-   (`refs/remotes/origin/*`); it never touches your branches, working tree, or
-   history, and never pushes, merges, or rewrites. A repository without an
-   `origin` remote isn't fetched. Turn it off in Settings → Auto-fetch (or
-   `settings.json`).
+2. **Fetching the repository you're viewing** — a quiet `git fetch`, with two
+   triggers: automatically as the panel opens _(on by default; turn it off in
+   Settings → Auto-fetch or `settings.json`)_, and manually via the ↻ button
+   next to the branch chip _(user-initiated, so it works regardless of the
+   auto-fetch toggle)_. Both triggers run the identical invocation: your
+   system `git` with your existing Git credentials, pinned to that
+   repository's `origin` remote with a branch-only refspec — gitwink adds no
+   destination of its own and sends nothing beyond what a normal fetch
+   negotiates (e.g. which commit IDs you already have). Locally it updates
+   only the remote-tracking mirror (`refs/remotes/origin/*`); it never touches
+   your branches, working tree, or history, and never pushes, merges, or
+   rewrites. A repository without an `origin` remote isn't fetched.
 
 ## Third-party components
 

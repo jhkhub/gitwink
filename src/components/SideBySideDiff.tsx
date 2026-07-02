@@ -12,6 +12,7 @@ import { parseDiff, type DiffSide } from "../lib/diff";
 import {
   flattenDiff,
   longestLines,
+  searchDiffRows,
 } from "../lib/diffView";
 import {
   getHighlighter,
@@ -127,6 +128,90 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
     setScrollTopL(0);
     setScrollTopR(0);
   }, [text]);
+
+  // ----- in-diff find (Ctrl+F) -----
+  // The columns are virtualized, so the browser's native find can't see
+  // off-screen rows. This searches the flat item list instead and drives the
+  // virtual scroll to each hit. State is per-file by construction — DiffApp
+  // unmounts this component (via the "Loading diff…" swap) on every file or
+  // context switch.
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findCur, setFindCur] = useState(0);
+  const findInputRef = useRef<HTMLInputElement | null>(null);
+  const findOpenRef = useRef(false);
+  findOpenRef.current = findOpen;
+
+  const findMatches = useMemo(
+    () => searchDiffRows(items, findQuery),
+    [items, findQuery],
+  );
+  // Decorations are gated on the bar being OPEN — closing the bar clears all
+  // tints (like every find UI) while the query survives for a re-open.
+  const findMatchSet = useMemo(
+    () => (findOpen ? new Set(findMatches) : new Set<number>()),
+    [findMatches, findOpen],
+  );
+
+  // Ctrl/Cmd+F summons (or refocuses) the bar; Esc closes it. Window-level —
+  // the scroll columns aren't focusable — and CAPTURE phase, so the Esc that
+  // closes the bar runs before (and suppresses) DiffApp's bubble-phase Esc
+  // that hides the whole window, no matter where focus sits (a find button,
+  // the diff text). e.code covers non-Latin layouts where e.key isn't "f".
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.isComposing) return; // IME mid-composition — never intercept
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === "f" || e.key === "F" || e.code === "KeyF")
+      ) {
+        e.preventDefault();
+        setFindOpen(true);
+        requestAnimationFrame(() => {
+          findInputRef.current?.focus();
+          findInputRef.current?.select();
+        });
+        return;
+      }
+      if (e.key === "Escape" && findOpenRef.current) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setFindOpen(false);
+      }
+    }
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      window.removeEventListener("keydown", onKey, { capture: true });
+  }, []);
+
+  // Center-ish a row in both columns (unlocked sides get aligned on purpose —
+  // a jump is a deliberate "take me there").
+  const scrollBothToRow = (row: number) => {
+    const target = Math.max(
+      0,
+      offsets[row] - Math.max(0, (viewportH - lineH) / 3),
+    );
+    if (leftRef.current) leftRef.current.scrollTop = target;
+    if (rightRef.current) rightRef.current.scrollTop = target;
+  };
+
+  // New query: restart at the first hit and bring it into view (only while
+  // the bar is up — a closed find never moves the scroll).
+  useEffect(() => {
+    setFindCur(0);
+    if (findOpenRef.current && findMatches.length > 0) {
+      scrollBothToRow(findMatches[0]);
+    }
+    // scrollBothToRow reads memoized geometry; findMatches is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [findMatches]);
+
+  const gotoFindMatch = (delta: number) => {
+    if (findMatches.length === 0) return;
+    const next = (findCur + delta + findMatches.length) % findMatches.length;
+    setFindCur(next);
+    scrollBothToRow(findMatches[next]);
+  };
 
   // Lazy-load Shiki on first mount that has a known language. Skipped
   // entirely for unknown extensions — saves a multi-MB download.
@@ -266,6 +351,14 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
     return [first, last];
   };
 
+  // Row the current find hit points at (guarded: matches can shrink a render
+  // before the reset effect clamps findCur). -1 while the bar is closed so no
+  // ring survives a close.
+  const findCurRow =
+    findOpen && findMatches.length > 0
+      ? findMatches[Math.min(findCur, findMatches.length - 1)]
+      : -1;
+
   const renderColumn = (
     side: "left" | "right",
     ref: React.RefObject<HTMLDivElement | null>,
@@ -276,12 +369,17 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
     for (let i = range[0]; i <= range[1]; i++) {
       const it = items[i];
       const top = offsets[i];
+      const isHit = findMatchSet.has(i);
+      const isCur = i === findCurRow;
       if (it.kind === "header") {
         rows.push(
           <div
             key={i}
             className={
-              "sbs-hunk-header" + (side === "right" ? " sbs-hunk-header-blank" : "")
+              "sbs-hunk-header" +
+              (side === "right" ? " sbs-hunk-header-blank" : "") +
+              (isHit ? " sbs-find-hit" : "") +
+              (isCur ? " sbs-find-cur" : "")
             }
             style={{ top, height: headerH }}
           >
@@ -299,6 +397,8 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
             highlighter={highlighter}
             lang={lang}
             dark={dark}
+            findHit={isHit}
+            findCurrent={isCur}
           />,
         );
       }
@@ -329,6 +429,70 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
 
   return (
     <div className="sbs">
+      {findOpen && (
+        <div className="sbs-find" role="search">
+          <input
+            ref={findInputRef}
+            className="sbs-find-input"
+            type="text"
+            value={findQuery}
+            placeholder="Find in diff…"
+            spellCheck={false}
+            aria-label="Find in diff"
+            autoFocus
+            onChange={(e) => setFindQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // IME (e.g. Hangul) composition commits/cancels with Enter/Esc
+              // — those must never navigate or close the bar.
+              if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+                return;
+              }
+              // Escape is handled by the capture-phase window listener above
+              // (closes the bar everywhere, shields DiffApp's hide).
+              if (e.key === "Enter") {
+                e.preventDefault();
+                gotoFindMatch(e.shiftKey ? -1 : 1);
+              }
+            }}
+          />
+          <span className="sbs-find-count" aria-live="polite">
+            {findQuery.trim()
+              ? findMatches.length
+                ? `${Math.min(findCur, findMatches.length - 1) + 1}/${findMatches.length}`
+                : "0"
+              : ""}
+          </span>
+          <button
+            type="button"
+            className="sbs-find-btn"
+            disabled={findMatches.length === 0}
+            onClick={() => gotoFindMatch(-1)}
+            title="Previous match (Shift+Enter)"
+            aria-label="Previous match"
+          >
+            ↑
+          </button>
+          <button
+            type="button"
+            className="sbs-find-btn"
+            disabled={findMatches.length === 0}
+            onClick={() => gotoFindMatch(1)}
+            title="Next match (Enter)"
+            aria-label="Next match"
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            className="sbs-find-btn"
+            onClick={() => setFindOpen(false)}
+            title="Close (Esc)"
+            aria-label="Close find"
+          >
+            ✕
+          </button>
+        </div>
+      )}
       <div className="sbs-cols" ref={colsRef} style={splitStyle}>
         {renderColumn("left", leftRef, rangeL, probeL)}
         <div
@@ -369,6 +533,10 @@ interface LineProps {
   highlighter: Highlighter | null;
   lang: ReturnType<typeof langForPath>;
   dark: boolean;
+  /** Row matches the in-diff find query (tinted). */
+  findHit: boolean;
+  /** Row is the CURRENT find hit (stronger ring). */
+  findCurrent: boolean;
 }
 
 // Memoized so a window slide (or any parent re-render) only touches rows that
@@ -381,6 +549,8 @@ const Line = memo(function Line({
   highlighter,
   lang,
   dark,
+  findHit,
+  findCurrent,
 }: LineProps) {
   const sign = side.type === "delete" ? "-" : side.type === "add" ? "+" : " ";
 
@@ -391,7 +561,11 @@ const Line = memo(function Line({
 
   return (
     <div
-      className={`sbs-line sbs-${kind} ${side.type ?? "blank"}`}
+      className={
+        `sbs-line sbs-${kind} ${side.type ?? "blank"}` +
+        (findHit ? " sbs-find-hit" : "") +
+        (findCurrent ? " sbs-find-cur" : "")
+      }
       data-line-num={side.lineNum ?? ""}
       data-side={kind}
       style={{ top, height }}

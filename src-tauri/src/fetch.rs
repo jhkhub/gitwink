@@ -103,14 +103,32 @@ impl FetchCooldown {
         self.inflight.fetch_add(1, Ordering::SeqCst);
         Some(FetchGuard(Arc::clone(&self.inflight)))
     }
+
+    /// Explicit, user-initiated claim: skips the cooldown CHECK (the user
+    /// asked for a fetch right now) but still stamps the timestamp — so the
+    /// next auto-fetch waits a full window — and still respects the global
+    /// in-flight cap (`None` = busy, try again in a moment).
+    pub fn claim_forced(&self, repo: &Path) -> Option<FetchGuard> {
+        let key = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+        let Ok(mut map) = self.last.lock() else {
+            return None;
+        };
+        if self.inflight.load(Ordering::SeqCst) >= MAX_INFLIGHT {
+            return None;
+        }
+        map.insert(key, Instant::now());
+        self.inflight.fetch_add(1, Ordering::SeqCst);
+        Some(FetchGuard(Arc::clone(&self.inflight)))
+    }
 }
 
 /// Fire a single non-interactive `git fetch origin` against `repo`, scoped to
 /// the remote-tracking mirror only. Blocks the calling thread — run it under
 /// `spawn_blocking`. Every failure mode (no git on PATH, no `origin`, auth
-/// required, network down, repo gone) is swallowed silently; this feature
-/// must never surface an error or a prompt.
-pub fn git_fetch_one_shot(repo: &Path) {
+/// required, network down, repo gone) is swallowed silently — never an error
+/// dialog or a prompt. Returns `true` iff git exited successfully (the
+/// explicit "Fetch now" button reports this; the auto path ignores it).
+pub fn git_fetch_one_shot(repo: &Path) -> bool {
     // An empty, app-owned hooks dir disables any repo-owned hook (notably the
     // `reference-transaction` hook a ref update would otherwise run) for this
     // invocation only. A missing dir already means "no hooks", but create it
@@ -197,40 +215,54 @@ pub fn git_fetch_one_shot(repo: &Path) {
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000);
 
-    if let Ok(child) = cmd.spawn() {
-        if wait_with_timeout(child, FETCH_TIMEOUT) {
-            // Hit the backstop — a wedged/extremely-slow transfer the
-            // low-speed abort didn't catch (e.g. ssh). Logged, not surfaced:
-            // the fetch retries after the cooldown. With --atomic the ref
-            // update is all-or-nothing, so the mirror isn't left half-updated;
-            // some objects may have downloaded into the object store (inert).
-            eprintln!(
-                "gitwink: auto-fetch hit the {}s backstop for {} — transfer killed; the ref update did not complete this round",
-                FETCH_TIMEOUT.as_secs(),
-                repo.display()
-            );
-        }
+    match cmd.spawn() {
+        Ok(child) => match wait_with_timeout(child, FETCH_TIMEOUT) {
+            WaitOutcome::Exited(status) => status.success(),
+            WaitOutcome::TimedOut => {
+                // Hit the backstop — a wedged/extremely-slow transfer the
+                // low-speed abort didn't catch (e.g. ssh). Logged, not
+                // surfaced: the fetch retries after the cooldown. With
+                // --atomic the ref update is all-or-nothing, so the mirror
+                // isn't left half-updated; some objects may have downloaded
+                // into the object store (inert).
+                eprintln!(
+                    "gitwink: fetch hit the {}s backstop for {} — transfer killed; the ref update did not complete this round",
+                    FETCH_TIMEOUT.as_secs(),
+                    repo.display()
+                );
+                false
+            }
+            WaitOutcome::Errored => false,
+        },
+        Err(_) => false,
     }
+}
+
+/// How one waited-on child ended: exited on its own (status attached), was
+/// killed for exceeding the timeout, or the wait itself errored.
+enum WaitOutcome {
+    Exited(std::process::ExitStatus),
+    TimedOut,
+    Errored,
 }
 
 /// Poll-wait for the child, killing it past `timeout`. `std::process` has no
 /// native timeout; a short poll loop avoids pulling in an async-process dep.
-/// Returns true iff the child was killed for exceeding `timeout`.
 ///
 /// Note: `kill()` reaps only the immediate `git` process. Descendants (ssh, a
 /// credential helper, pack-processing) normally die when git's pipes close; a
 /// wedged grandchild could outlive us. Full process-tree teardown (a Windows
 /// Job Object) is deliberately deferred — the backstop rarely fires.
-fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> bool {
+fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> WaitOutcome {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
-            Ok(Some(_)) => return false,
+            Ok(Some(status)) => return WaitOutcome::Exited(status),
             Ok(None) => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    return true;
+                    return WaitOutcome::TimedOut;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -239,7 +271,7 @@ fn wait_with_timeout(mut child: std::process::Child, timeout: Duration) -> bool 
             Err(_) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return WaitOutcome::Errored;
             }
         }
     }
