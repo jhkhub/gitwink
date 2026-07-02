@@ -5,6 +5,56 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-07-02
+
+### Added
+
+- **Find inside a diff (Ctrl+F).** The side-by-side view is virtualized, so the
+  browser's own find can't see off-screen lines — this searches the whole diff.
+  `Ctrl+F` opens a bar that jumps to each match, counts them (`3/17`), cycles
+  with Enter / Shift+Enter, and tints every hit. Esc closes the bar (a second
+  Esc closes the window). Works with Korean/CJK input and non-Latin keyboards.
+- **Fetch now — an explicit ↻ button** next to the branch chip. It runs the same
+  quiet, `origin`-pinned, read-only fetch as auto-fetch, but on demand: it works
+  even with auto-fetch turned off, ignores the cooldown, and tells you the
+  outcome (spins → ✓, or ! with why), refreshing the ahead/behind counts and the
+  "last fetch" age. So there's never any doubt about whether you're looking at
+  current remote state.
+- **View history — go back and forward (Alt+← / Alt+→).** Every place you jump —
+  warping to a searched commit, opening a file's history, switching repos —
+  becomes a step you can walk back and forward through, like a browser, with a
+  matching `‹ ›` pair in the header. Esc walks the same history. Exiting a file's
+  history now returns you to wherever you opened it from (e.g. back to all repos)
+  instead of stranding you in one repo.
+- **File history without hunting.** Reach a file's history from the right-click
+  menu — on a diff-window file, on the diff content, or on a changed-file row in
+  the timeline — or from a visible 🕘 on the timeline's changed-file rows, not
+  just the diff window.
+- **Search names what it actually searched.** A search with no matches that was
+  scoped to one repo now says so and offers a one-click "Search all repos,"
+  instead of a bare "no matches" that reads like the commit doesn't exist.
+- **Copy this file's diff** — a right-click action in the diff window that copies
+  the patch you're reading, with a reference header, ready for a chat prompt.
+- **A first-run tip** naming the non-obvious moves — search, expand, file
+  history, copy-for-AI — shown once and dismissable.
+
+### Changed
+
+- **The diff window is honest when something fails.** A commit whose file list
+  can't load says so (instead of a permanent "Loading files…"), and a diff that
+  fails to fetch shows a real error instead of a misleading "No textual diff."
+- **A filter that's narrowing the view is visible at a glance** — the repo,
+  author, and branch chips gain an accent dot when they're not on "all," so a
+  near-empty list's cause is obvious.
+- **Diff sidebar polish** — status badges (NEW / MOD / DEL / REN) and rename
+  arrows now match the panel; the sidebar scales with the UI-scale setting and
+  can no longer sprout a horizontal scrollbar; the chosen context level
+  (±3 / ±25 / Full) sticks across files and sessions.
+- **Relative times don't run past days** — old commits read `12w` / `8mo` / `2y`
+  instead of `730d`.
+- **The right-click menu is grouped by subject** (selection · file · commit), and
+  hover affordances (🕘, ↗) are faintly visible at rest instead of invisible.
+
 ## [0.9.0] — 2026-06-28
 
 ### Added
