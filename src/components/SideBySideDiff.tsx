@@ -28,6 +28,10 @@ interface Props {
   /** File path so we can detect the language for Shiki. Optional — falls
    * back to plain monospace when missing or unknown. */
   filePath?: string;
+  /** Identity of the file this text belongs to (repo:hash:path). When `text`
+   * changes under the SAME key — a ±3/±25/Full context toggle — the reading
+   * position is re-anchored by line number instead of resetting to the top. */
+  fileKey?: string;
   /** When true, the two columns scroll vertically as one (default). When
    * false they scroll independently — the overview rail then shows both
    * viewports and offers a re-align. */
@@ -47,6 +51,12 @@ function isDarkScheme(): boolean {
 
 // Persisted old/new split — fraction of width given to the left (old)
 // column. Clamped so neither side can be dragged to nothing.
+// The find query/open state survives file switches within the diff window's
+// session (the component remounts per file; only one instance exists at a
+// time) — hunting one symbol across a commit's files keeps the query.
+let persistedFindQuery = "";
+let persistedFindOpen = false;
+
 const SPLIT_KEY = "gitwink.diffSplit";
 const SPLIT_MIN = 0.15;
 const SPLIT_MAX = 0.85;
@@ -61,7 +71,7 @@ function saveSplit(v: number): void {
   } catch {}
 }
 
-export function SideBySideDiff({ text, filePath, locked }: Props) {
+export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
   const scale = useUiScale();
   const lineH = sbsLineH(scale);
   const headerH = sbsHeaderH(scale);
@@ -121,24 +131,92 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
 
   const lang = filePath ? langForPath(filePath) : null;
 
-  // Open every new file at the top — the persisted webview means the old
-  // scroll would otherwise carry over to an unrelated file.
+  // ----- reading-position anchor -----
+  // Live geometry for the (stable) scroll listeners' top-line capture.
+  const geomRef = useRef({ items, offsets });
+  geomRef.current = { items, offsets };
+  const anchorFileKeyRef = useRef<string | undefined>(undefined);
+  const topLineRef = useRef<{ line: number; side: "left" | "right" } | null>(
+    null,
+  );
+
+  // Remember the top visible line (by old/new line NUMBER — those survive a
+  // context change) on every scroll, so a same-file text swap can restore it.
+  const captureTopLine = () => {
+    const el = leftRef.current;
+    if (!el) return;
+    const { items: its, offsets: offs } = geomRef.current;
+    if (its.length === 0) return;
+    const y = el.scrollTop;
+    let lo = 0;
+    let hi = its.length - 1;
+    let ans = 0;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (offs[mid] <= y) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    for (let i = ans; i < Math.min(its.length, ans + 60); i++) {
+      const it = its[i];
+      if (it.kind !== "row") continue;
+      if (it.left.lineNum != null) {
+        topLineRef.current = { line: it.left.lineNum, side: "left" };
+        return;
+      }
+      if (it.right.lineNum != null) {
+        topLineRef.current = { line: it.right.lineNum, side: "right" };
+        return;
+      }
+    }
+  };
+
+  // Same-file text swap (a ±3/±25/Full context toggle, kept mounted by
+  // DiffApp): re-anchor to the previous top line instead of yanking the
+  // reader back to line 1. A DIFFERENT file opens at the top — the persisted
+  // webview would otherwise carry an unrelated file's scroll over.
   useLayoutEffect(() => {
-    if (leftRef.current) leftRef.current.scrollTop = 0;
-    if (rightRef.current) rightRef.current.scrollTop = 0;
-    setScrollTopL(0);
-    setScrollTopR(0);
+    const sameFile = fileKey != null && anchorFileKeyRef.current === fileKey;
+    anchorFileKeyRef.current = fileKey;
+    let top = 0;
+    if (sameFile && topLineRef.current) {
+      const { line, side } = topLineRef.current;
+      const idx = items.findIndex(
+        (it) =>
+          it.kind === "row" &&
+          (side === "left"
+            ? it.left.lineNum != null && it.left.lineNum >= line
+            : it.right.lineNum != null && it.right.lineNum >= line),
+      );
+      if (idx > 0) top = offsets[idx];
+    } else {
+      topLineRef.current = null;
+    }
+    if (leftRef.current) leftRef.current.scrollTop = top;
+    if (rightRef.current) rightRef.current.scrollTop = top;
+    setScrollTopL(top);
+    setScrollTopR(top);
+    // items/offsets are derived from text — text is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
 
   // ----- in-diff find (Ctrl+F) -----
   // The columns are virtualized, so the browser's native find can't see
   // off-screen rows. This searches the flat item list instead and drives the
-  // virtual scroll to each hit. State is per-file by construction — DiffApp
-  // unmounts this component (via the "Loading diff…" swap) on every file or
-  // context switch.
-  const [findOpen, setFindOpen] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
+  // virtual scroll to each hit. Query/open state persists across file
+  // switches via the module-scope mirror above; matches recompute per file.
+  const [findOpen, setFindOpen] = useState(() => persistedFindOpen);
+  const [findQuery, setFindQuery] = useState(() => persistedFindQuery);
   const [findCur, setFindCur] = useState(0);
+  useEffect(() => {
+    persistedFindQuery = findQuery;
+  }, [findQuery]);
+  useEffect(() => {
+    persistedFindOpen = findOpen;
+  }, [findOpen]);
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const findOpenRef = useRef(false);
   findOpenRef.current = findOpen;
@@ -238,16 +316,22 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
     }
   };
 
-  // New query: restart at the first hit and bring it into view (only while
-  // the bar is up — a closed find never moves the scroll).
+  // New QUERY: restart at the first hit and bring it into view (only while
+  // the bar is up — a closed find never moves the scroll). Gated on the query
+  // actually changing: a same-query items refresh (mount with a persisted
+  // query, or a context toggle) must NOT yank the reading position.
+  const prevFindQueryRef = useRef(findQuery);
   useEffect(() => {
     setFindCur(0);
+    const queryChanged = prevFindQueryRef.current !== findQuery;
+    prevFindQueryRef.current = findQuery;
+    if (!queryChanged) return;
     if (findOpenRef.current && findMatches.length > 0) {
       scrollToMatch(findMatches[0]);
     }
     // scrollToMatch reads memoized geometry; findMatches is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findMatches]);
+  }, [findMatches, findQuery]);
 
   const gotoFindMatch = (delta: number) => {
     if (findMatches.length === 0) return;
@@ -302,6 +386,7 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
           rafL = 0;
           setScrollTopL(l.scrollTop);
           if (locked) setScrollTopR(l.scrollTop);
+          captureTopLine();
         });
       }
     };
@@ -482,7 +567,8 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
             placeholder="Find in diff…"
             spellCheck={false}
             aria-label="Find in diff"
-            autoFocus
+            // No autoFocus: with a persisted-open bar this would steal focus
+            // on every file switch. Ctrl+F focuses explicitly (rAF above).
             onChange={(e) => setFindQuery(e.target.value)}
             onKeyDown={(e) => {
               // IME (e.g. Hangul) composition commits/cancels with Enter/Esc

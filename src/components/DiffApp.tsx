@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -90,6 +90,14 @@ export function DiffApp() {
   // gets parsed as a (zero-hunk) patch and rendered as a misleading
   // "No textual diff." When set, the main pane shows an honest error block.
   const [diffError, setDiffError] = useState<string | null>(null);
+  // True while a text diff is in flight. During a same-file context toggle
+  // the old text stays on screen (no unmount), so this drives a small
+  // floating chip instead of the full "Loading diff…" swap.
+  const [diffLoading, setDiffLoading] = useState(false);
+  // Which repo:hash:file the CURRENT diffText belongs to — a same-key fetch
+  // (context toggle) replaces in place; a different key unmounts to the
+  // loading state first so another file's text never lingers.
+  const shownDiffKeyRef = useRef("");
   // Unified-diff context lines for the selected file. 3 = default hunk
   // view; the header toggle bumps it to expand context or show the whole
   // file. Persists across file switches so "Full" stays on if chosen.
@@ -233,10 +241,12 @@ export function DiffApp() {
     // is binary or oversized.
     if (filesCtx !== `${ctx.repoPath}:${ctx.hash}`) {
       setDiffText(null);
+      shownDiffKeyRef.current = "";
       return;
     }
     if (isImage || isBinary) {
       setDiffText("");
+      shownDiffKeyRef.current = "";
       return;
     }
     // Metadata loaded for this commit but the selected path isn't in it
@@ -244,10 +254,17 @@ export function DiffApp() {
     // all a Full one) for a file we can't size-check.
     if (!selectedFileMeta) {
       setDiffText("");
+      shownDiffKeyRef.current = "";
       return;
     }
     let cancelled = false;
-    setDiffText(null);
+    // A context toggle on the SAME file swaps the text IN PLACE — the old
+    // content stays rendered (SideBySideDiff stays mounted, keeping the
+    // reading position + find state) with a small loading chip. Only a
+    // different file/commit goes through the unmounting "Loading diff…" swap.
+    const fetchKey = `${ctx.repoPath}:${ctx.hash}:${selectedFile}`;
+    if (shownDiffKeyRef.current !== fetchKey) setDiffText(null);
+    setDiffLoading(true);
     (async () => {
       try {
         const txt = await fileDiff(
@@ -256,9 +273,14 @@ export function DiffApp() {
           selectedFile,
           effectiveContext,
         );
-        if (!cancelled) setDiffText(txt);
+        if (!cancelled) {
+          setDiffText(txt);
+          shownDiffKeyRef.current = fetchKey;
+        }
       } catch (e) {
         if (!cancelled) setDiffError(String(e));
+      } finally {
+        if (!cancelled) setDiffLoading(false);
       }
     })();
     return () => {
@@ -547,11 +569,19 @@ export function DiffApp() {
           ) : diffText == null ? (
             <div className="diff-loading">Loading diff…</div>
           ) : (
-            <SideBySideDiff
-              text={diffText}
-              filePath={selectedFile}
-              locked={scrollLocked}
-            />
+            <>
+              {diffLoading && (
+                <div className="diff-inline-loading" role="status">
+                  Loading…
+                </div>
+              )}
+              <SideBySideDiff
+                text={diffText}
+                filePath={selectedFile}
+                fileKey={`${ctx.repoPath}:${ctx.hash}:${selectedFile}`}
+                locked={scrollLocked}
+              />
+            </>
           )}
         </main>
       </div>
