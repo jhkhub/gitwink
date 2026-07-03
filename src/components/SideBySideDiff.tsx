@@ -17,7 +17,8 @@ import {
 } from "../lib/diffView";
 import {
   getHighlighter,
-  highlightLineCached,
+  highlightLineIfCached,
+  highlightLineQueued,
   langForPath,
 } from "../lib/highlight";
 import { sbsHeaderH, sbsLineH, useUiScale } from "../lib/settings";
@@ -706,10 +707,47 @@ const Line = memo(function Line({
   const overCap = raw.length > LINE_RENDER_CAP;
   const shown = overCap ? raw.slice(0, LINE_RENDER_CAP) : raw;
 
-  const highlighted =
-    highlighter && lang && raw.length <= HL_LINE_CAP
-      ? highlightLineCached(highlighter, raw, lang, dark)
-      : null;
+  // Highlighting is scroll-safe: a cache hit renders styled immediately; a
+  // miss renders PLAIN TEXT this frame and upgrades asynchronously through
+  // the budgeted queue (a viewport of synchronous codeToHtml calls used to
+  // blow whole frames on a minimap drag). `undefined` = not computed yet.
+  const wantHl = !!highlighter && !!lang && raw.length <= HL_LINE_CAP;
+  const cached = wantHl
+    ? highlightLineIfCached(raw, lang!, dark)
+    : null;
+  const [asyncHl, setAsyncHl] = useState<{
+    key: string;
+    html: string | null;
+  } | null>(null);
+  useEffect(() => {
+    if (!wantHl || cached !== undefined) return;
+    let live = true;
+    const key = `${dark ? "d" : "l"}|${lang}|${raw}`;
+    const cancel = highlightLineQueued(
+      highlighter!,
+      raw,
+      lang!,
+      dark,
+      (html) => {
+        if (live) setAsyncHl({ key, html });
+      },
+    );
+    return () => {
+      live = false;
+      cancel();
+    };
+    // `cached === undefined` is the queue-needed signal; the rest identify
+    // the line. eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantHl, cached === undefined, highlighter, raw, lang, dark]);
+
+  const asyncKey = `${dark ? "d" : "l"}|${lang}|${raw}`;
+  const highlighted = wantHl
+    ? cached !== undefined
+      ? cached
+      : asyncHl && asyncHl.key === asyncKey
+        ? asyncHl.html
+        : null
+    : null;
 
   return (
     <div
