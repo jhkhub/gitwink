@@ -141,6 +141,12 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
   const findInputRef = useRef<HTMLInputElement | null>(null);
   const findOpenRef = useRef(false);
   findOpenRef.current = findOpen;
+  // Live mirror for the mount-level key listener: a hunk-less diff (pure
+  // rename / mode change) renders the "No textual diff." early return and no
+  // bar — Ctrl+F must not arm invisible find state there (it would swallow
+  // the next Esc meant for the window).
+  const hasRowsRef = useRef(false);
+  hasRowsRef.current = items.length > 0;
 
   const findMatches = useMemo(
     () => searchDiffRows(items, findQuery),
@@ -161,6 +167,7 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.isComposing) return; // IME mid-composition — never intercept
+      if (!hasRowsRef.current) return; // empty diff renders no bar — stay inert
       if (
         (e.ctrlKey || e.metaKey) &&
         (e.key === "f" || e.key === "F" || e.code === "KeyF")
