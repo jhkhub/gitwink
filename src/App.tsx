@@ -179,6 +179,17 @@ function samePath(a: string, b: string): boolean {
   return norm(a) === norm(b);
 }
 
+/** Set-equality for the RepoChip's multi-selection ("all" or a path list). */
+function sameRepoSelection(
+  a: string[] | "all",
+  b: string[] | "all",
+): boolean {
+  if (a === "all" || b === "all") return a === b;
+  if (a.length !== b.length) return false;
+  const set = new Set(b);
+  return a.every((p) => set.has(p));
+}
+
 function App() {
   const [scanning, setScanning] = useState(false);
   const [commits, setCommits] = useState<CommitSummary[] | null>(null);
@@ -498,6 +509,17 @@ function App() {
       // sees `fileHistory` and fetches the file's history instead.
       unFileHistory = await onFileHistoryOpen((p) => {
         if (!mounted) return;
+        // Re-clicking 🕘 for the file already on screen is a refresh, not a
+        // navigation — no dead history entry.
+        const v = viewRef.current;
+        if (
+          v.fileHistory &&
+          v.fileHistory.repoPath === p.repoPath &&
+          v.fileHistory.filePath === p.filePath
+        ) {
+          setRefreshNonce((n) => n + 1);
+          return;
+        }
         // Record the view we're leaving so back returns to it (works even when
         // opening a second file's history from within file-history mode).
         pushView();
@@ -1288,9 +1310,17 @@ function App() {
   // Picking a repo IS a navigation — record the view we're leaving (and leave
   // any file-history scope). A manual pick also retires the warp anchor:
   // without this, revisiting the warped repo later would scroll-jump and
-  // re-pulse the old search hit on remount.
+  // re-pulse the old search hit on remount. Re-picking the CURRENT scope is a
+  // no-op (no dead history entry to Back through) — unless it exits a
+  // file-history scope, which is a real navigation.
   const changeRepoPath = useCallback(
     (p: string | null) => {
+      if (
+        p === viewRef.current.repoPath &&
+        viewRef.current.fileHistory == null
+      ) {
+        return;
+      }
       pushView();
       setFileHistory(null);
       setWarpAnchor(null);
@@ -1300,6 +1330,12 @@ function App() {
   );
   const changeRepoPaths = useCallback(
     (ps: string[] | "all") => {
+      if (
+        sameRepoSelection(ps, viewRef.current.repoPaths) &&
+        viewRef.current.fileHistory == null
+      ) {
+        return;
+      }
       pushView();
       setFileHistory(null);
       setWarpAnchor(null);
@@ -1307,6 +1343,21 @@ function App() {
     },
     [pushView],
   );
+
+  // The RepoChip's "All repos" row resets BOTH scope dimensions — as ONE
+  // navigation with ONE history entry (routing it through the two setters
+  // above would push twice when both are narrowed).
+  const resetRepoScope = useCallback(() => {
+    const v = viewRef.current;
+    if (v.repoPath == null && v.repoPaths === "all" && v.fileHistory == null) {
+      return; // already the widest scope
+    }
+    pushView();
+    setFileHistory(null);
+    setWarpAnchor(null);
+    setSelectedRepoPath(null);
+    setSelectedRepoPaths("all");
+  }, [pushView]);
 
   function togglePin(path: string) {
     setPinnedRepos((prev) => {
@@ -1423,6 +1474,7 @@ function App() {
             selectedPaths={selectedRepoPaths}
             onSelect={changeRepoPath}
             onSelectMulti={changeRepoPaths}
+            onSelectAll={resetRepoScope}
             onTogglePin={togglePin}
             onHide={(path) => {
               // Optimistic: drop from local list immediately; backend

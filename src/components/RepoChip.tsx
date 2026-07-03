@@ -25,6 +25,9 @@ interface Props {
   selectedPaths: string[] | "all";
   onSelect: (path: string | null) => void;
   onSelectMulti: (paths: string[] | "all") => void;
+  /** "All repos" resets BOTH scope dimensions as one navigation (one
+   *  view-history entry) — not an onSelect + onSelectMulti pair. */
+  onSelectAll: () => void;
   onTogglePin: (path: string) => void;
   onHide: (path: string) => void;
   totalRepoCount: number;
@@ -41,6 +44,7 @@ export function RepoChip({
   selectedPaths,
   onSelect,
   onSelectMulti,
+  onSelectAll,
   onTogglePin,
   onHide,
   totalRepoCount,
@@ -223,8 +227,7 @@ export function RepoChip({
             (selectedPath == null && selectedPaths === "all" ? " active" : "")
           }
           onClick={() => {
-            onSelect(null);
-            onSelectMulti("all");
+            onSelectAll();
             onClose();
           }}
         >
@@ -251,6 +254,7 @@ export function RepoChip({
     singleRepoMode,
     onSelect,
     onSelectMulti,
+    onSelectAll,
     onTogglePin,
     onHide,
     onClose,
