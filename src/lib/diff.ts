@@ -59,14 +59,21 @@ export function parseDiff(unified: string): { hunks: DiffHunk[] } {
       pendingDeletes = [];
       continue;
     }
+    // A new file section ends the current hunk, so the headers that follow
+    // (index/---/+++) are preamble again — never hunk content.
+    if (raw.startsWith("diff ")) {
+      flushDeletes();
+      if (cur) hunks.push(cur);
+      cur = null;
+      continue;
+    }
     if (!cur) continue;
-    if (
-      raw.startsWith("diff ") ||
-      raw.startsWith("index ") ||
-      raw.startsWith("--- ") ||
-      raw.startsWith("+++ ") ||
-      raw.startsWith("\\ ")
-    ) {
+    // NOTE: "--- "/"+++ " are deliberately NOT skipped in-hunk — a deleted
+    // line whose content starts with "-- " (an SQL/Lua/Haskell comment)
+    // arrives as "--- …" and an added "++ " line as "+++ …"; skipping them
+    // silently dropped the line and shifted every later line number. The
+    // real ---/+++ preamble only occurs while `cur` is null (above).
+    if (raw.startsWith("index ") || raw.startsWith("\\ ")) {
       continue;
     }
     const origin = raw.charAt(0);
