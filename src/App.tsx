@@ -510,14 +510,15 @@ function App() {
       unFileHistory = await onFileHistoryOpen((p) => {
         if (!mounted) return;
         // Re-clicking 🕘 for the file already on screen is a refresh, not a
-        // navigation — no dead history entry.
+        // navigation — no dead history entry. refsNonce is what the
+        // file-history effect keys on (refreshNonce deliberately isn't).
         const v = viewRef.current;
         if (
           v.fileHistory &&
           v.fileHistory.repoPath === p.repoPath &&
           v.fileHistory.filePath === p.filePath
         ) {
-          setRefreshNonce((n) => n + 1);
+          setRefsNonce((n) => n + 1);
           return;
         }
         // Record the view we're leaving so back returns to it (works even when
@@ -915,21 +916,11 @@ function App() {
       setCommits(null);
       setCommitsError(false);
     }
-    // File-history scope wins: show the commits that touched this file,
-    // ignoring the (dimmed) branch / author / time lenses.
+    // File-history scope wins — its fetch lives in the dedicated effect
+    // below (keyed on refsNonce, NOT refreshNonce, so a plain re-summon
+    // never repeats the multi-second capped history walk).
     if (fileHistory && fileHistory.repoPath === selectedRepoPath) {
-      const { repoPath, filePath } = fileHistory;
-      (async () => {
-        try {
-          const cs = await fetchFileHistory(repoPath, filePath);
-          if (!cancelled) setCommits(cs);
-        } catch {
-          if (!cancelled) setCommits([]);
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+      return;
     }
     if (selectedBranches !== "all" && selectedBranches.length === 0) {
       setCommits([]);
@@ -968,6 +959,30 @@ function App() {
     refreshNonce,
     fileHistory,
   ]);
+
+  // ----- file-history commits (dedicated effect) -----
+  // The capped history walk is the panel's most expensive single query (up
+  // to 50k commits × two tree lookups), so it re-runs ONLY when its inputs
+  // change: the scope itself, or the repo's refs actually moving (refsNonce).
+  // Deliberately NOT refreshNonce — a plain panel re-summon (and the
+  // summon's own auto-fetch echo) repeated the multi-second scan for nothing.
+  useEffect(() => {
+    if (!singleMode || !selectedRepoPath) return;
+    if (!fileHistory || fileHistory.repoPath !== selectedRepoPath) return;
+    let cancelled = false;
+    const { repoPath, filePath } = fileHistory;
+    (async () => {
+      try {
+        const cs = await fetchFileHistory(repoPath, filePath);
+        if (!cancelled) setCommits(cs);
+      } catch {
+        if (!cancelled) setCommits([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [singleMode, selectedRepoPath, fileHistory, refsNonce]);
 
   // Manual add via drag-drop / paste. Returns whether the add succeeded
   // so the paste handler can clear the clipboard string only on success.
