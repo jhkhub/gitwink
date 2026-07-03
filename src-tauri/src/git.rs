@@ -477,6 +477,11 @@ pub fn file_diff(
 
     let mut opts = git2::DiffOptions::new();
     opts.pathspec(file_path);
+    // The pathspec must match the LITERAL path. Default pathspec semantics
+    // are fnmatch, so a bracketed filename like pages/[id].tsx is a character
+    // class that also matches pages/i.tsx etc. — pulling other files' hunks
+    // into this file's diff (and poisoning the diff cache with it).
+    opts.disable_pathspec_match(true);
     // Caller-controlled: 3 for the default hunk view, larger to expand
     // context, very large (≥ file length) for a whole-file diff. git merges
     // hunks as the context grows, so the same patch output renders a full
@@ -1847,6 +1852,48 @@ mod tests {
         assert_eq!(
             commits[0].repo_name,
             dir.path().file_name().unwrap().to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn file_diff_treats_pathspec_literally_not_fnmatch() {
+        // "[id].tsx" as an fnmatch pattern is a character class matching
+        // "i.tsx"/"d.tsx" — and NOT its own literal name. Without the
+        // literal-pathspec pin, a commit touching both files rendered the
+        // sibling's hunks under the bracketed file (and cached them).
+        let dir = TempDir::new().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+
+        let mk_tree = |bracket: &str, sibling: &str| {
+            let ba = repo.blob(bracket.as_bytes()).unwrap();
+            let bb = repo.blob(sibling.as_bytes()).unwrap();
+            let mut b = repo.treebuilder(None).unwrap();
+            b.insert("[id].tsx", ba, 0o100644).unwrap();
+            b.insert("i.tsx", bb, 0o100644).unwrap();
+            repo.find_tree(b.write().unwrap()).unwrap()
+        };
+
+        let sig1 = Signature::new("t", "t@e", &Time::new(1_000, 0)).unwrap();
+        let t1 = mk_tree("bracket v1\n", "sibling v1\n");
+        let c1 = repo
+            .commit(Some("HEAD"), &sig1, &sig1, "seed", &t1, &[])
+            .unwrap();
+        let c1c = repo.find_commit(c1).unwrap();
+
+        let sig2 = Signature::new("t", "t@e", &Time::new(2_000, 0)).unwrap();
+        let t2 = mk_tree("bracket v2\n", "sibling v2\n");
+        let c2 = repo
+            .commit(Some("HEAD"), &sig2, &sig2, "edit both", &t2, &[&c1c])
+            .unwrap();
+
+        let patch = file_diff(dir.path(), &c2.to_string(), "[id].tsx", 3).unwrap();
+        assert!(
+            patch.contains("bracket v2"),
+            "own hunks must be present:\n{patch}"
+        );
+        assert!(
+            !patch.contains("sibling"),
+            "sibling file's hunks leaked into the diff:\n{patch}"
         );
     }
 }

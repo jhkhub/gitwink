@@ -351,6 +351,32 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         tx.commit()?;
     }
 
+    // v0.10.x cleanup: file_diff used fnmatch pathspec semantics, so cached
+    // patches for paths containing fnmatch metachars ([, *, ?) could hold
+    // OTHER files' hunks (pages/[id].tsx also matched pages/i.tsx). The
+    // pathspec is literal now — purge the possibly-poisoned rows once; they
+    // recompute correctly on next view. Gated via `meta` so a healthy,
+    // freshly-cached bracketed diff isn't re-evicted every launch.
+    let purged: bool = conn
+        .query_row(
+            "SELECT 1 FROM meta WHERE key = 'diffs_fnmatch_purge_v1'",
+            [],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if !purged {
+        let _ = conn.execute(
+            "DELETE FROM diffs WHERE file_path GLOB '*[[]*' \
+             OR file_path GLOB '*[*]*' OR file_path GLOB '*[?]*'",
+            [],
+        );
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value, updated_at) \
+             VALUES ('diffs_fnmatch_purge_v1', '1', strftime('%s','now'))",
+            [],
+        );
+    }
+
     // v0.1.2 cleanup: the v0.1.1 orchestrator used `fs::canonicalize`
     // and stored its `\\?\…` Windows extended-length output as
     // canonical_path. Existing rows from v0.1.0 / migration backfill
