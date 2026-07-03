@@ -327,12 +327,17 @@ export function TimelineWindowed({
 
   // `ref` for the open expansion's <li>: measure its height (it grows as
   // ChangedFiles loads in) and keep `expansionH` current. Called with null
-  // when the expansion unmounts (collapsed, or scrolled out of the window).
+  // when the expansion unmounts — which happens BOTH on a real collapse and
+  // when the open row merely scrolls out of the render band. Zeroing in the
+  // second case would shift every row below by expansionH under the user's
+  // cursor (and mirror-jump on the way back), so keep the last measured
+  // height while a row is still expanded; after a real collapse the geometry
+  // ignores it anyway (expH gates on expandedIndex >= 0).
   const measureExpansion = useCallback((el: HTMLLIElement | null) => {
     expansionObserver.current?.disconnect();
     expansionObserver.current = null;
     if (!el) {
-      setExpansionH(0);
+      if (expandedKeyRef.current == null) setExpansionH(0);
       return;
     }
     setExpansionH(el.offsetHeight);
