@@ -273,14 +273,26 @@ export function Timeline({
   // AFTER the resetKey effect so on a warp (which changes both) the anchor
   // scroll wins over the reset-to-top within the same effect pass. Retries
   // on every commits refresh until the hash is present (the repo's list
-  // loads async after a warp switches repo/filters); a hash beyond the
-  // loaded cap simply never applies.
+  // loads async after a warp switches repo/filters). A target beyond the
+  // loaded cap can never apply — surface that as an inline notice instead
+  // of silently opening the repo at the top.
   const [pulseHash, setPulseHash] = useState<string | null>(null);
+  const [anchorMiss, setAnchorMiss] = useState<string | null>(null);
   const anchorAppliedRef = useRef(0);
   useEffect(() => {
-    if (!anchor || anchor.nonce === anchorAppliedRef.current) return;
+    if (!anchor || anchor.nonce === anchorAppliedRef.current) {
+      setAnchorMiss(null);
+      return;
+    }
     const idx = commits.findIndex((c) => c.hash === anchor.hash);
-    if (idx < 0) return;
+    if (idx < 0) {
+      // The list for this view has loaded and the target isn't in it — it's
+      // older than the newest N commits the panel loads. Keep retrying on
+      // later refreshes, but tell the user what happened meanwhile.
+      if (commits.length > 0) setAnchorMiss(anchor.hash.slice(0, 7));
+      return;
+    }
+    setAnchorMiss(null);
     anchorAppliedRef.current = anchor.nonce;
     setSelected(idx);
     const el = scrollRef.current;
@@ -533,6 +545,23 @@ export function Timeline({
           </span>
         )}
       </div>
+      {anchorMiss && (
+        <div className="timeline-anchor-miss" role="status">
+          <span className="timeline-anchor-miss-text">
+            Commit <code>{anchorMiss}</code> is older than the{" "}
+            {commits.length} commits loaded here.
+          </span>
+          <button
+            type="button"
+            className="timeline-anchor-miss-x"
+            aria-label="Dismiss"
+            title="Dismiss"
+            onClick={() => setAnchorMiss(null)}
+          >
+            ✕
+          </button>
+        </div>
+      )}
       {total === 0 ? (
         <p className="panel-empty">No commits match.</p>
       ) : (

@@ -1268,6 +1268,51 @@ body,
 .firstrun-tip-dismiss:hover {
   opacity: 1;
 }
+
+/* Warp-landing miss notice — the searched commit exists but is older than
+   the N commits the single-repo view loads. Sticky so it stays visible
+   while the user scrolls to confirm. */
+.timeline-anchor-miss {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: calc(8px * var(--ui-scale, 1));
+  margin: calc(4px * var(--ui-scale, 1)) calc(8px * var(--ui-scale, 1));
+  padding: calc(5px * var(--ui-scale, 1)) calc(9px * var(--ui-scale, 1));
+  border: 1px solid rgba(220, 160, 40, 0.4);
+  border-radius: 8px;
+  background: rgba(250, 244, 230, 0.97);
+  font-size: calc(10.5px * var(--ui-scale, 1));
+}
+.timeline-anchor-miss-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.4;
+}
+.timeline-anchor-miss code {
+  font-family: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, monospace;
+}
+.timeline-anchor-miss-x {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.55;
+  font-size: calc(11px * var(--ui-scale, 1));
+  padding: 0 calc(2px * var(--ui-scale, 1));
+}
+.timeline-anchor-miss-x:hover {
+  opacity: 1;
+}
+@media (prefers-color-scheme: dark) {
+  .timeline-anchor-miss {
+    border-color: rgba(230, 180, 80, 0.4);
+    background: rgba(60, 52, 34, 0.97);
+  }
+}
 @media (prefers-color-scheme: dark) {
   .firstrun-tip {
     border-color: rgba(140, 160, 255, 0.3);
