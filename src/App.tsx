@@ -746,6 +746,10 @@ function App() {
   const performWarp = useCallback(
     (c: CommitSummary) => {
       pushView();
+      // Leaving any file-history scope — a warp lands in the commit's normal
+      // repo history, never a hybrid file-scoped view. (Back still restores
+      // the file-history view from the snapshot pushed above.)
+      setFileHistory(null);
       suppressBranchRestoreRef.current =
         c.repoPath !== selectedRepoPathRef.current;
       setSelectedRepoPath(c.repoPath);
@@ -1113,8 +1117,10 @@ function App() {
         e.preventDefault();
         return;
       }
-      // No history left but still scoped to one repo — leave single-repo mode.
+      // No history left but still scoped to one repo — leave single-repo mode
+      // (and retire any warp anchor so a later revisit can't replay it).
       if (singleMode) {
+        setWarpAnchor(null);
         setSelectedRepoPath(null);
         e.preventDefault();
         return;
@@ -1246,11 +1252,14 @@ function App() {
     setSelectedAuthors(v);
   }, []);
   // Picking a repo IS a navigation — record the view we're leaving (and leave
-  // any file-history scope).
+  // any file-history scope). A manual pick also retires the warp anchor:
+  // without this, revisiting the warped repo later would scroll-jump and
+  // re-pulse the old search hit on remount.
   const changeRepoPath = useCallback(
     (p: string | null) => {
       pushView();
       setFileHistory(null);
+      setWarpAnchor(null);
       setSelectedRepoPath(p);
     },
     [pushView],
@@ -1259,6 +1268,7 @@ function App() {
     (ps: string[] | "all") => {
       pushView();
       setFileHistory(null);
+      setWarpAnchor(null);
       setSelectedRepoPaths(ps);
     },
     [pushView],
