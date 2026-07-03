@@ -121,8 +121,21 @@ fn scan_and_cache_recent_commits(
     let total = total_cap(window_days);
 
     let mut all: Vec<git::CommitSummary> = Vec::new();
+    let mut failed_active: Vec<String> = Vec::new();
     for repo in repos {
+        // A repo already known missing (moved, disconnected network drive)
+        // must not stall the sweep: Repository::open on a dead SMB path can
+        // block 10-30s, and this loop is serial — one dead repo delayed
+        // EVERY repo's fresh commits. Its cached rows stay visible (greyed);
+        // the background reconciler below re-probes for recovery.
+        if repo.status == "missing" {
+            continue;
+        }
         let Ok(commits) = git::recent_commits(Path::new(&repo.path), per_repo, cutoff) else {
+            // Couldn't open an 'active' repo — let the detached reconciler
+            // decide whether the path is actually gone (vs a transient git
+            // error), off this hot path.
+            failed_active.push(repo.path.clone());
             continue;
         };
         let commits: Vec<git::CommitSummary> = commits
@@ -158,7 +171,112 @@ fn scan_and_cache_recent_commits(
     all.truncate(total);
 
     let _ = cache::upsert_commits(&mut conn, &all).map_err(|e| e.to_string())?;
+
+    // Detached, single-flight status reconciliation: flip walk-failed repos
+    // whose directory is actually gone to 'missing' (so the NEXT sweep skips
+    // them), and probe currently-missing repos for recovery. Runs on its own
+    // thread because these probes are exactly the calls that can hang on a
+    // dead share — they must never block a sweep or the blocking pool.
+    reconcile_repo_statuses_detached(app.clone(), failed_active);
+
     Ok(all)
+}
+
+/// One in-flight pass at a time; a sweep that fires while a previous pass is
+/// still probing (hung on a dead share) simply skips — the next sweep retries.
+static REPO_STATUS_RECONCILE_INFLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn reconcile_repo_statuses_detached(app: AppHandle, failed_active: Vec<String>) {
+    use std::sync::atomic::Ordering;
+    if REPO_STATUS_RECONCILE_INFLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        let _release = ReleaseOnDrop;
+        struct ReleaseOnDrop;
+        impl Drop for ReleaseOnDrop {
+            fn drop(&mut self) {
+                REPO_STATUS_RECONCILE_INFLIGHT
+                    .store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        #[derive(Clone, Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RepoStatusPayload {
+            canonical_path: String,
+            status: &'static str,
+        }
+
+        let Ok(conn) = cache::open(&app) else {
+            return;
+        };
+        let now = unix_now();
+
+        // Walk-failed 'active' repos: flip to missing ONLY when the directory
+        // is really gone (a transient git error with the dir present stays
+        // active — same semantics as the startup verify pass).
+        for path in failed_active {
+            if Path::new(&path).is_dir() {
+                continue;
+            }
+            let updated = conn
+                .execute(
+                    "UPDATE repos SET status = 'missing', missing_since = ?1 \
+                     WHERE (canonical_path = ?2 OR path = ?2) AND status = 'active'",
+                    rusqlite::params![now, &path],
+                )
+                .unwrap_or(0);
+            if updated > 0 {
+                let _ = app.emit(
+                    "timeline://repo-status",
+                    &RepoStatusPayload {
+                        canonical_path: path,
+                        status: "missing",
+                    },
+                );
+            }
+        }
+
+        // Recovery: probe missing repos; a drive that came back flips to
+        // active so the next sweep walks it again.
+        let missing: Vec<String> = conn
+            .prepare(
+                "SELECT path FROM repos \
+                 WHERE status = 'missing' AND user_state NOT IN ('removed')",
+            )
+            .and_then(|mut st| {
+                st.query_map([], |r| r.get::<_, String>(0))
+                    .and_then(|rows| rows.collect())
+            })
+            .unwrap_or_default();
+        for path in missing {
+            if !Path::new(&path).is_dir() {
+                continue;
+            }
+            let updated = conn
+                .execute(
+                    "UPDATE repos SET status = 'active', missing_since = NULL, \
+                     last_verified_at = ?1 \
+                     WHERE (canonical_path = ?2 OR path = ?2) AND status = 'missing'",
+                    rusqlite::params![now, &path],
+                )
+                .unwrap_or(0);
+            if updated > 0 {
+                let _ = app.emit(
+                    "timeline://repo-status",
+                    &RepoStatusPayload {
+                        canonical_path: path,
+                        status: "active",
+                    },
+                );
+            }
+        }
+    });
 }
 
 #[tauri::command]
