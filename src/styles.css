@@ -2496,6 +2496,13 @@ body,
   cursor: default;
 }
 
+/* Marker appended to a render-truncated pathological line (see
+   LINE_RENDER_CAP in SideBySideDiff). */
+.sbs-line-truncated {
+  opacity: 0.5;
+  font-style: italic;
+}
+
 /* Match tints — one specificity step above the add/delete row tints
    (.sbs-line.add etc., declared later in this file), so a find hit reads on
    ANY row kind. The current hit adds an inset ring on top. */

@@ -42,6 +42,19 @@ interface Props {
  * before the next window resolves. */
 const OVERSCAN = 8;
 
+/** Render cap for pathological single-line files (minified bundles): a
+ * multi-MB line would otherwise lay out a multi-million-px text run in BOTH
+ * columns — a multi-second main-thread stall with Esc unresponsive — and the
+ * width probe would size the track past the browser's layout limits. Only
+ * the RENDERING truncates (with a marker); the patch text itself is intact
+ * ("Copy file diff" still yields everything). */
+const LINE_RENDER_CAP = 10_000;
+
+/** Skip syntax highlighting for lines longer than this (VS Code's
+ * tokenization-limit pattern) — Shiki on a huge line is pure stall, and
+ * plain text renders instantly. */
+const HL_LINE_CAP = 2_000;
+
 function isDarkScheme(): boolean {
   return (
     typeof window !== "undefined" &&
@@ -535,11 +548,17 @@ export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
       <div className="sbs-col" ref={ref}>
         <div className="sbs-col-inner" style={{ height: total }}>
           {/* In-flow, invisible — sizes the track to the widest line so the
-              horizontal scrollbar stays put as the vertical window slides. */}
+              horizontal scrollbar stays put as the vertical window slides.
+              Capped like the rendered lines: an uncapped multi-MB one-liner
+              would lay out a multi-million-px run and stall the thread. */}
           <div className="sbs-line sbs-probe" aria-hidden="true">
             <span className="sbs-num" />
             <span className="sbs-sign" />
-            <span className="sbs-text">{probe}</span>
+            <span className="sbs-text">
+              {probe.length > LINE_RENDER_CAP + 64
+                ? probe.slice(0, LINE_RENDER_CAP + 64)
+                : probe}
+            </span>
           </div>
           {rows}
         </div>
@@ -683,9 +702,13 @@ const Line = memo(function Line({
 }: LineProps) {
   const sign = side.type === "delete" ? "-" : side.type === "add" ? "+" : " ";
 
+  const raw = side.text || " ";
+  const overCap = raw.length > LINE_RENDER_CAP;
+  const shown = overCap ? raw.slice(0, LINE_RENDER_CAP) : raw;
+
   const highlighted =
-    highlighter && lang
-      ? highlightLineCached(highlighter, side.text || " ", lang, dark)
+    highlighter && lang && raw.length <= HL_LINE_CAP
+      ? highlightLineCached(highlighter, raw, lang, dark)
       : null;
 
   return (
@@ -708,7 +731,16 @@ const Line = memo(function Line({
           dangerouslySetInnerHTML={{ __html: highlighted }}
         />
       ) : (
-        <span className="sbs-text">{side.text || " "}</span>
+        <span className="sbs-text">
+          {shown}
+          {overCap && (
+            <span className="sbs-line-truncated">
+              {" "}
+              … +{(raw.length - LINE_RENDER_CAP).toLocaleString()} chars (render
+              truncated)
+            </span>
+          )}
+        </span>
       )}
     </div>
   );
