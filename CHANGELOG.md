@@ -5,6 +5,67 @@ All notable changes to gitwink will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] — 2026-07-04
+
+A hardening release. A full multi-agent QA sweep of v0.10.0 surfaced 29 verified
+defects — 13 bugs, 8 performance bottlenecks, 8 rough edges — and every one is
+fixed here, each as its own commit and each build- and test-verified. No new
+features; the whole release is making what shipped in 0.10.0 solid.
+
+### Fixed
+
+- **Diffs show the right lines again.** A file whose patch contained a line
+  starting with `-- ` or `++ ` (an email signature, `--` in prose, a Markdown
+  rule) shifted every following line number; and asking for one file's history
+  could splice in hunks from similarly-named files, because the path was matched
+  as a glob instead of a literal. Both are corrected and now regression-tested.
+- **Expanding a commit no longer jerks the timeline.** Opening a commit whose row
+  had scrolled to the edge of the virtualized band keeps the scroll position put.
+- **Esc does one thing at a time.** With a commit expanded, Esc collapses it
+  before it will close the panel; a context menu, an open find bar, and a
+  dropdown each take their turn in a stable order instead of racing each other.
+- **Korean / CJK input is safe everywhere.** Pressing Enter or Esc mid-composition
+  in the search box, the diff find bar, or any dropdown confirms the text instead
+  of firing the shortcut underneath it.
+- **Opening a repo that can't be read** now says so, instead of leaving the
+  previous repo's commits on screen as if they belonged to this one.
+- **Warp / jump edge cases.** Jumping to a searched commit clears any file-history
+  scope; a jump past the loaded window lands with a visible notice and recovery
+  instead of silently at the top; a stale jump target no longer lingers after you
+  navigate by hand; and stepping Back across repos restores that view's branch
+  filter, not whatever happens to be on disk now.
+- **Buttons keep working.** A window-level Enter no longer hijacks a focused panel
+  button, and after clicking a chip or a Copy button, `j` / `k` keep navigating.
+- **Settings** no longer reverts a freshly-toggled "keep panel pinned" from a
+  stale form snapshot.
+- **Ctrl+F on an empty diff** no longer arms an invisible find bar that then eats
+  the next Esc.
+
+### Performance
+
+- **Big repos stay responsive.** Branch-label computation stops walking up to
+  5,000 commits past the visible window; a file's history stops re-scanning the
+  full history (50k+ commits) on every summon and cache invalidation; and commits
+  with thousands of changed files are cached, their file list capped with an
+  honest "showing N of M" footer.
+- **The diff window doesn't freeze.** Syntax highlighting upgrades asynchronously
+  as you scroll instead of blocking it, and a minified single-line file is capped
+  instead of locking the window.
+- **Summoning is cheaper.** A single-repo view skips re-shipping multi-megabyte
+  commit lists over IPC when nothing changed; a dead or unreachable
+  network-drive repo is skipped (with background recovery) instead of blocking
+  the whole refresh; and the diff minimap memoizes its segment marks.
+
+### Changed
+
+- **State survives navigation.** The timeline stays mounted across opening and
+  closing search (no more full re-scan on every toggle), the diff keeps its
+  scroll position and find state across a context-size toggle, relative
+  timestamps tick while the panel is open, and view-history stops recording
+  no-op navigation steps.
+- **A second launch summons the existing window** instead of starting a second
+  instance.
+
 ## [0.10.0] — 2026-07-02
 
 ### Added
