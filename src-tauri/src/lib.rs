@@ -23,6 +23,13 @@ const BLUR_DEBOUNCE_MS: u64 = 80;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // FIRST plugin: a second launch of the hidden tray app is the user
+        // LOOKING for the window — summon the existing panel instead of
+        // spawning a duplicate instance (second tray icon, silently-dead
+        // global hotkey, doubled watchers/fetches, settings.json races).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            window::show_panel(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
