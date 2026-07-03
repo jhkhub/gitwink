@@ -10,7 +10,7 @@
 // Clicking or dragging the rail scrolls BOTH columns to that position (which
 // also re-aligns them). Wheel/keyboard scrolling on a column still works.
 
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import type { MinimapSegment } from "../lib/diffView";
 
@@ -33,7 +33,16 @@ interface Band {
 }
 const FULL: Band = { top: 0, height: 1, overflow: false };
 
-export function DiffMinimap({ segments, leftRef, rightRef, locked }: Props) {
+// memo: the parent re-renders on every rAF scroll tick — with stable props
+// (segments identity, refs, locked) those ticks must not re-reconcile a
+// potentially thousands-strong mark list; the thumbs re-render from this
+// component's own scroll listeners.
+export const DiffMinimap = memo(function DiffMinimap({
+  segments,
+  leftRef,
+  rightRef,
+  locked,
+}: Props) {
   const railRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
   const [left, setLeft] = useState<Band>(FULL);
@@ -127,6 +136,20 @@ export function DiffMinimap({ segments, leftRef, rightRef, locked }: Props) {
 
   const showRealign = !locked && diverged;
 
+  // The marks are pure functions of `segments` — don't rebuild/re-diff a
+  // lockfile-regen's thousands of divs on every thumb-state render.
+  const marks = useMemo(
+    () =>
+      segments.map((s, i) => (
+        <div
+          key={i}
+          className={`sbs-minimap-mark ${s.type}`}
+          style={{ top: `${s.topPct}%`, height: `${s.heightPct}%` }}
+        />
+      )),
+    [segments],
+  );
+
   return (
     <div
       className="sbs-minimap"
@@ -141,13 +164,7 @@ export function DiffMinimap({ segments, leftRef, rightRef, locked }: Props) {
       onPointerCancel={endDrag}
       onLostPointerCapture={endDrag}
     >
-      {segments.map((s, i) => (
-        <div
-          key={i}
-          className={`sbs-minimap-mark ${s.type}`}
-          style={{ top: `${s.topPct}%`, height: `${s.heightPct}%` }}
-        />
-      ))}
+      {marks}
 
       {locked
         ? left.overflow && (
@@ -198,4 +215,4 @@ export function DiffMinimap({ segments, leftRef, rightRef, locked }: Props) {
       )}
     </div>
   );
-}
+});
