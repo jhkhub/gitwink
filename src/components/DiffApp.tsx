@@ -84,6 +84,9 @@ function loadContext(): number {
 export function DiffApp() {
   const [ctx, setCtx] = useState<DiffOpenPayload | null>(null);
   const [files, setFiles] = useState<ChangedFile[]>([]);
+  // True total changed-file count — the shipped list is capped backend-side
+  // for vendor-bump-scale commits ("showing N of M" in the sidebar).
+  const [filesTotal, setFilesTotal] = useState(0);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [diffText, setDiffText] = useState<string | null>(null);
   // A real diff-fetch failure, kept SEPARATE from diffText so an error never
@@ -188,15 +191,17 @@ export function DiffApp() {
     setFilesError(false);
     (async () => {
       try {
-        const fs = await changedFiles(ctx.repoPath, ctx.hash);
+        const r = await changedFiles(ctx.repoPath, ctx.hash);
         if (!cancelled) {
-          setFiles(fs);
+          setFiles(r.files);
+          setFilesTotal(r.total);
           setFilesCtx(key);
           setFilesError(false);
         }
       } catch {
         if (!cancelled) {
           setFiles([]);
+          setFilesTotal(0);
           setFilesCtx(key);
           setFilesError(true);
         }
@@ -525,6 +530,12 @@ export function DiffApp() {
                 </div>
               );
             })
+          )}
+          {filesTotal > files.length && (
+            <div className="diff-sidebar-more">
+              Showing {files.length.toLocaleString()} of{" "}
+              {filesTotal.toLocaleString()} changed files
+            </div>
           )}
         </aside>
         <main className="diff-main">

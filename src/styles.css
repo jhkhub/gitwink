@@ -2395,6 +2395,16 @@ body,
   gap: calc(6px * var(--ui-scale, 1));
 }
 
+/* "Showing N of M changed files" — a vendor-bump-scale commit's list is
+   capped backend-side; say so instead of silently truncating. */
+.changed-files-more,
+.diff-sidebar-more {
+  padding: calc(6px * var(--ui-scale, 1)) calc(12px * var(--ui-scale, 1));
+  font-size: calc(10px * var(--ui-scale, 1));
+  opacity: 0.6;
+  font-style: italic;
+}
+
 .diff-main {
   flex: 1;
   overflow: auto;

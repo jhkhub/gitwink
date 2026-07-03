@@ -22,7 +22,7 @@ export async function copyCommitAiContext(
   commit: CommitSummary,
 ): Promise<"copied" | "error"> {
   try {
-    const files = await changedFiles(commit.repoPath, commit.hash);
+    const { files } = await changedFiles(commit.repoPath, commit.hash);
     let diffText: string | null = null;
     const totalLines = files.reduce(
       (acc, f) => acc + (f.isBinary ? 0 : f.insertions + f.deletions),

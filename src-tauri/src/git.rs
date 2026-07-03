@@ -274,18 +274,22 @@ pub fn changed_files(repo_path: &Path, commit_hash: &str) -> Result<Vec<ChangedF
         let git2_binary = delta.new_file().is_binary() || delta.old_file().is_binary();
         let is_binary = classify_binary(&display_path, git2_binary);
         // delta.{new,old}_file().size() routinely returns 0 in git2 when the
-        // blob wasn't loaded; fetch it explicitly.
-        let new_size = if delta.new_file().exists() {
-            repo.find_blob(delta.new_file().id())
-                .map(|b| b.size() as u64)
+        // blob wasn't loaded; read the ODB HEADER for the size — find_blob
+        // would inflate the whole object (multi-MB for vendored bundles,
+        // ×2 sides × thousands of files on a vendor-bump commit).
+        let blob_size = |oid: git2::Oid| -> Option<u64> {
+            repo.odb()
+                .and_then(|odb| odb.read_header(oid))
+                .map(|(size, _kind)| size as u64)
                 .ok()
+        };
+        let new_size = if delta.new_file().exists() {
+            blob_size(delta.new_file().id())
         } else {
             None
         };
         let old_size = if delta.old_file().exists() {
-            repo.find_blob(delta.old_file().id())
-                .map(|b| b.size() as u64)
-                .ok()
+            blob_size(delta.old_file().id())
         } else {
             None
         };

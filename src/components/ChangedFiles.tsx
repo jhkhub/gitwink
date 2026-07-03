@@ -15,16 +15,21 @@ interface Props {
 
 export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setFiles(null);
+    setTotal(0);
     setError(null);
     (async () => {
       try {
-        const fs = await fetchChangedFiles(repoPath, hash);
-        if (!cancelled) setFiles(fs);
+        const r = await fetchChangedFiles(repoPath, hash);
+        if (!cancelled) {
+          setFiles(r.files);
+          setTotal(r.total);
+        }
       } catch (e) {
         if (!cancelled) setError(String(e));
       }
@@ -105,6 +110,12 @@ export function ChangedFiles({ repoPath, hash, onOpenDiff }: Props) {
           </div>
         );
       })}
+      {total > files.length && (
+        <div className="changed-files-more">
+          Showing {files.length.toLocaleString()} of {total.toLocaleString()}{" "}
+          changed files
+        </div>
+      )}
     </div>
   );
 }

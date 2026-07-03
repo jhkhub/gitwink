@@ -122,11 +122,19 @@ export async function repoCommits(
   });
 }
 
+/** A commit's changed files: the shipped list is capped backend-side for
+ * vendor-bump-scale commits; `total` carries the true count so callers can
+ * render "showing N of M". */
+export interface ChangedFilesResult {
+  files: ChangedFile[];
+  total: number;
+}
+
 export async function changedFiles(
   repoPath: string,
   hash: string,
-): Promise<ChangedFile[]> {
-  return invoke<ChangedFile[]>("changed_files", { repoPath, hash });
+): Promise<ChangedFilesResult> {
+  return invoke<ChangedFilesResult>("changed_files", { repoPath, hash });
 }
 
 /** Commits that changed `filePath` in this repo, newest first. Backs the
