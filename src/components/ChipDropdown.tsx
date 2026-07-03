@@ -47,7 +47,14 @@ export function ChipDropdown({
       // The Esc that cancels an IME composition (in the chip's search input)
       // must not close the dropdown.
       if (e.isComposing) return;
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        // One Esc = one layer: without this, the same keypress fell through
+        // to App's cascade and ALSO collapsed the open commit expansion —
+        // the only overlay that leaked (ContextMenu/SearchBar/find all stop).
+        e.preventDefault();
+        e.stopPropagation();
+      }
     }
     document.addEventListener("mousedown", handler);
     document.addEventListener("keydown", key);
