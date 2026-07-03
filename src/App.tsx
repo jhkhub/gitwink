@@ -27,6 +27,7 @@ import {
   fetchRepoNow,
   fileHistory as fetchFileHistory,
   getBranchSelection,
+  repoRefsFingerprint,
   getPinnedRepos,
   getScanState,
   hideRepo,
@@ -202,6 +203,9 @@ function App() {
   // repo's rows can never render under the new header; a plain refreshNonce
   // re-pull keeps the rows (no flash).
   const commitsSigRef = useRef("");
+  // Refs fingerprint the current `commits` were walked from — a same-view
+  // re-pull with an unchanged fingerprint skips the multi-MB IPC re-ship.
+  const commitsRefsFpRef = useRef<string | null>(null);
   const [allRepos, setAllRepos] = useState<Repo[]>([]);
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([]);
@@ -911,8 +915,10 @@ function App() {
     const sig = `${selectedRepoPath}|${JSON.stringify(selectedBranches)}|${windowDays}|${
       fileHistory ? `file:${fileHistory.filePath}` : ""
     }`;
-    if (commitsSigRef.current !== sig) {
+    const sameView = commitsSigRef.current === sig;
+    if (!sameView) {
       commitsSigRef.current = sig;
+      commitsRefsFpRef.current = null; // new view — fingerprint belongs to the old one
       setCommits(null);
       setCommitsError(false);
     }
@@ -930,12 +936,21 @@ function App() {
       try {
         const branchParam =
           selectedBranches === "all" ? null : selectedBranches;
+        // Background re-pull for an UNCHANGED view (a plain re-summon): probe
+        // the refs fingerprint first — identical tips mean an identical walk,
+        // so skip re-shipping up to 2,000 full commits over IPC for nothing.
+        const fp = await repoRefsFingerprint(selectedRepoPath, branchParam);
+        if (cancelled) return;
+        if (sameView && fp !== "" && fp === commitsRefsFpRef.current) {
+          return;
+        }
         const cs = await repoCommits(
           selectedRepoPath,
           branchParam,
           toWindowParam(windowDays),
         );
         if (!cancelled) {
+          commitsRefsFpRef.current = fp;
           setCommits(cs);
           setCommitsError(false);
         }

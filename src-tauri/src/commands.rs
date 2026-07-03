@@ -952,6 +952,23 @@ pub async fn repo_commits(
     .map_err(|e| e.to_string())?
 }
 
+/// Cheap change probe for the single-repo view — see
+/// `git::repo_refs_fingerprint`. The frontend compares this before a
+/// background re-pull and skips the multi-MB commit re-ship when nothing
+/// moved.
+#[tauri::command]
+pub async fn repo_refs_fingerprint(
+    repo_path: String,
+    branches: Option<Vec<String>>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::repo_refs_fingerprint(Path::new(&repo_path), branches.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn get_pinned_repos(app: AppHandle) -> Vec<String> {
     settings::load(&app).pinned_repos

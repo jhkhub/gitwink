@@ -1095,6 +1095,53 @@ fn collect_tagged_oids(repo: &Repository) -> HashSet<Oid> {
     set
 }
 
+/// Cheap change probe for the single-repo view: the (ref, tip) pairs the
+/// corresponding `repo_commits` walk would start from, sorted and joined.
+/// If this string didn't move since the last pull, the walk would return
+/// the same rows — the frontend uses it to skip re-shipping up to 2,000
+/// full CommitSummary structs on a plain panel re-summon. Errs on the side
+/// of extra fetches (it includes ALL origin tips, not just in-window ones),
+/// never on staleness.
+pub fn repo_refs_fingerprint(
+    repo_path: &Path,
+    branches: Option<&[String]>,
+) -> Result<String> {
+    let repo = Repository::open(repo_path)
+        .with_context(|| format!("open repo {}", repo_path.display()))?;
+    let mut parts: Vec<String> = Vec::new();
+    match branches {
+        Some(sel) => {
+            // Resolve exactly like repo_commits' explicit mode: full ref
+            // paths pass through, bare names mean refs/heads/{name}.
+            for name in sel {
+                let full = if name.starts_with("refs/") {
+                    name.clone()
+                } else {
+                    format!("refs/heads/{name}")
+                };
+                if let Ok(r) = repo.find_reference(&full) {
+                    if let Some(oid) = r.target() {
+                        parts.push(format!("{full}:{oid}"));
+                    }
+                }
+            }
+        }
+        None => {
+            for glob in ["refs/heads/*", "refs/remotes/origin/*"] {
+                if let Ok(refs) = repo.references_glob(glob) {
+                    for r in refs.flatten() {
+                        if let (Some(n), Some(oid)) = (r.name(), r.target()) {
+                            parts.push(format!("{n}:{oid}"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    parts.sort();
+    Ok(parts.join("|"))
+}
+
 /// Walk the given branches (None = all local heads, like recent_commits) in
 /// a single repository, deduping by SHA, returning newest-first commits with
 /// parent SHAs populated.

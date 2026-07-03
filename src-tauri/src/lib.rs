@@ -343,6 +343,7 @@ pub fn run() {
             commands::ack_auto_fetch_notice,
             commands::maybe_fetch_repo,
             commands::fetch_repo_now,
+            commands::repo_refs_fingerprint,
             commands::open_settings_file,
             commands::set_live_settings,
         ])

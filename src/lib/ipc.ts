@@ -122,6 +122,16 @@ export async function repoCommits(
   });
 }
 
+/** Cheap change probe: the (ref, tip) pairs the repo_commits walk would
+ * start from. Unchanged fingerprint ⇒ identical rows ⇒ the caller skips
+ * re-shipping up to 2,000 commits on a plain re-summon. */
+export async function repoRefsFingerprint(
+  repoPath: string,
+  branches: string[] | null,
+): Promise<string> {
+  return invoke<string>("repo_refs_fingerprint", { repoPath, branches });
+}
+
 /** A commit's changed files: the shipped list is capped backend-side for
  * vendor-bump-scale commits; `total` carries the true count so callers can
  * render "showing N of M". */
