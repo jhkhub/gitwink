@@ -475,7 +475,16 @@ export function TimelineWindowed({
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
-      if (target && ["INPUT", "TEXTAREA"].includes(target.tagName)) return;
+      // Typing fields AND focused interactive controls own their keys — an
+      // Enter on a Tab-focused button must activate the button, not toggle
+      // or warp the selected commit.
+      if (
+        target?.closest(
+          'input, textarea, [contenteditable="true"], button, a, select, [role="checkbox"]',
+        )
+      ) {
+        return;
+      }
       if (e.key === "j" || e.key === "ArrowDown") {
         setSelected((s) => Math.min(s + 1, Math.max(0, count - 1)));
         e.preventDefault();
