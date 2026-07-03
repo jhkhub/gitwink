@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import {
   broadcastSettings,
-  getCurrentSettings,
+  useSettingsSnapshot,
   type UpdateCheckMode,
 } from "../lib/settings";
 
@@ -73,7 +73,13 @@ function codeToTauriKey(code: string): string | null {
 }
 
 export function Settings() {
-  const [settings, setSettings] = useState(getCurrentSettings);
+  // Live store subscription — NOT a mount-time copy. This window is hidden
+  // (not closed) on X, so a frozen snapshot would go stale the moment any
+  // other window changes a setting (📌 pin), and the next edit here would
+  // broadcast the stale full object, reverting that change everywhere.
+  // broadcastSettings updates the store synchronously, so edits round-trip
+  // through the same subscription with no fighting.
+  const settings = useSettingsSnapshot();
   const scaleTimer = useRef<number | undefined>(undefined);
   const fontTimer = useRef<number | undefined>(undefined);
 
@@ -86,7 +92,6 @@ export function Settings() {
 
   function setScale(uiScale: number) {
     const next = { ...settings, uiScale };
-    setSettings(next);
     broadcastSettings(next);
     window.clearTimeout(scaleTimer.current);
     scaleTimer.current = window.setTimeout(() => {
@@ -98,7 +103,6 @@ export function Settings() {
     const trimmed = family.trim();
     const fam = trimmed.length > 0 ? trimmed : null;
     const next = { ...settings, diffFontFamily: fam };
-    setSettings(next);
     broadcastSettings(next);
     window.clearTimeout(fontTimer.current);
     fontTimer.current = window.setTimeout(() => {
@@ -108,7 +112,6 @@ export function Settings() {
 
   function setUpdateMode(mode: UpdateCheckMode) {
     const next = { ...settings, updateCheck: mode };
-    setSettings(next);
     broadcastSettings(next);
     // Persist immediately — radio clicks are single events, not a sweep,
     // so debounce buys nothing and the user expects the tray dot /
@@ -118,7 +121,6 @@ export function Settings() {
 
   function setAutoFetch(enabled: boolean) {
     const next = { ...settings, autoFetchOnShow: enabled };
-    setSettings(next);
     broadcastSettings(next);
     // A checkbox is a single discrete event — persist immediately, no debounce.
     void invoke("set_auto_fetch_on_show", { enabled });
@@ -199,7 +201,6 @@ export function Settings() {
         try {
           await invoke("set_panel_hotkey", { spec: accel });
           const next = { ...settingsRef.current, panelHotkey: accel };
-          setSettings(next);
           broadcastSettings(next);
           setRecording(false);
           setHotkeyError(null);

@@ -180,3 +180,11 @@ export function useUiScale(): number {
 export function usePanelPinned(): boolean {
   return useSyncExternalStore(subscribe, () => current.panelPinned);
 }
+
+/** React hook — the FULL live settings snapshot, re-rendering on every
+ *  change from any window. The Settings form reads this instead of a
+ *  mount-time copy, so an edit can never broadcast a stale field (e.g.
+ *  reverting a 📌 pin toggled while the hidden-not-closed window slept). */
+export function useSettingsSnapshot(): AppSettings {
+  return useSyncExternalStore(subscribe, getCurrentSettings);
+}
