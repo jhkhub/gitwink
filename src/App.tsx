@@ -1070,6 +1070,9 @@ function App() {
   // warp-return / file-history-exit rungs (both pushed a view on navigate).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
+      // IME composition Enter/Esc (e.g. Hangul in the search input) must
+      // never drive the cascade — a cancelled composition is not a "close".
+      if (e.isComposing) return;
       // Top layers own the keyboard: the modal closes on Esc, a dropdown
       // handles its own Esc — neither should let view-nav keys churn the
       // timeline underneath.

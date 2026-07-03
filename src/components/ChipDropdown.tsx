@@ -44,6 +44,9 @@ export function ChipDropdown({
       if (!ref.current.contains(e.target as Node)) onClose();
     }
     function key(e: KeyboardEvent) {
+      // The Esc that cancels an IME composition (in the chip's search input)
+      // must not close the dropdown.
+      if (e.isComposing) return;
       if (e.key === "Escape") onClose();
     }
     document.addEventListener("mousedown", handler);

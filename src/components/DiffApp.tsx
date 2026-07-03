@@ -154,6 +154,8 @@ export function DiffApp() {
     })();
 
     function onKey(e: KeyboardEvent) {
+      // The Esc that cancels an IME composition must not hide the window.
+      if (e.isComposing) return;
       if (e.key === "Escape") {
         void getCurrentWindow().hide();
       }

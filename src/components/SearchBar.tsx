@@ -54,6 +54,11 @@ export function SearchBar({
         aria-label="Search commits"
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => {
+          // IME (e.g. Hangul) composition commits with Enter and cancels
+          // with Esc — neither must warp or close the bar mid-word.
+          if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) {
+            return;
+          }
           if (e.key === "Escape") {
             e.preventDefault();
             e.stopPropagation();
