@@ -88,24 +88,39 @@ export function flattenDiff(hunks: DiffHunk[]): {
   return { items, segments };
 }
 
+/** One find hit: the row index plus the first match's column and side, so
+ * the viewer can reveal the match HORIZONTALLY too (a hit past ~100 columns
+ * on a long line would otherwise stay off-screen after the vertical jump). */
+export interface FindMatch {
+  row: number;
+  /** 0-based char index of the first occurrence in the matched text. */
+  col: number;
+  side: "left" | "right" | "header";
+}
+
 /** Case-insensitive find over the flattened rows — the columns are
  * virtualized, so the browser's native Ctrl+F can't see off-screen rows; this
  * searches the item list directly. A row matches when either side's text (or
- * a hunk header's text) contains the query. Returns ascending row indices;
- * empty for an empty/whitespace query. */
-export function searchDiffRows(items: Item[], query: string): number[] {
+ * a hunk header's text) contains the query; one FindMatch per row (first
+ * occurrence, left side preferred). Ascending row order; empty for an
+ * empty/whitespace query. */
+export function searchDiffRows(items: Item[], query: string): FindMatch[] {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const out: number[] = [];
+  const out: FindMatch[] = [];
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (it.kind === "header") {
-      if (it.text.toLowerCase().includes(q)) out.push(i);
-    } else if (
-      it.left.text.toLowerCase().includes(q) ||
-      it.right.text.toLowerCase().includes(q)
-    ) {
-      out.push(i);
+      const col = it.text.toLowerCase().indexOf(q);
+      if (col >= 0) out.push({ row: i, col, side: "header" });
+    } else {
+      const l = it.left.text.toLowerCase().indexOf(q);
+      if (l >= 0) {
+        out.push({ row: i, col: l, side: "left" });
+        continue;
+      }
+      const r = it.right.text.toLowerCase().indexOf(q);
+      if (r >= 0) out.push({ row: i, col: r, side: "right" });
     }
   }
   return out;

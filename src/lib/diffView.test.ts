@@ -89,21 +89,39 @@ describe("flattenDiff", () => {
 });
 
 describe("searchDiffRows", () => {
-  it("matches either side, case-insensitively, returning row indices", () => {
+  const rows = (items: ReturnType<typeof flatten>["items"], q: string) =>
+    searchDiffRows(items, q).map((m) => m.row);
+
+  it("matches either side, case-insensitively, one hit per row", () => {
     const { items } = flatten(SIMPLE);
     // "old line" only exists on the left of the replace row (index 2);
     // "NEW" (case-folded) only on its right — both hit the same row.
-    expect(searchDiffRows(items, "old line")).toEqual([2]);
-    expect(searchDiffRows(items, "NEW")).toEqual([2]);
+    expect(rows(items, "old line")).toEqual([2]);
+    expect(rows(items, "NEW")).toEqual([2]);
     // "line" hits the replace row once (no duplicate for both sides).
-    expect(searchDiffRows(items, "line")).toEqual([2]);
+    expect(rows(items, "line")).toEqual([2]);
+  });
+
+  it("reports the first match's column and side (left preferred)", () => {
+    const { items } = flatten(SIMPLE);
+    expect(searchDiffRows(items, "line")).toEqual([
+      { row: 2, col: 4, side: "left" }, // "old line" — left wins over right
+    ]);
+    expect(searchDiffRows(items, "new")).toEqual([
+      { row: 2, col: 0, side: "right" },
+    ]);
+    expect(searchDiffRows(items, "@@")[0]).toMatchObject({
+      row: 0,
+      col: 0,
+      side: "header",
+    });
   });
 
   it("matches hunk-header text and multiple rows in order", () => {
     const { items } = flatten(SIMPLE);
-    expect(searchDiffRows(items, "@@")).toEqual([0]);
+    expect(rows(items, "@@")).toEqual([0]);
     // "t" appears in ctx (1) and tail (3) — not in the old/new pair.
-    expect(searchDiffRows(items, "t")).toEqual([1, 3]);
+    expect(rows(items, "t")).toEqual([1, 3]);
   });
 
   it("empty / whitespace query matches nothing", () => {

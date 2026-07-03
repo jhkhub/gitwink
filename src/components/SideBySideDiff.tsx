@@ -13,6 +13,7 @@ import {
   flattenDiff,
   longestLines,
   searchDiffRows,
+  type FindMatch,
 } from "../lib/diffView";
 import {
   getHighlighter,
@@ -155,7 +156,10 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
   // Decorations are gated on the bar being OPEN — closing the bar clears all
   // tints (like every find UI) while the query survives for a re-open.
   const findMatchSet = useMemo(
-    () => (findOpen ? new Set(findMatches) : new Set<number>()),
+    () =>
+      findOpen
+        ? new Set(findMatches.map((m) => m.row))
+        : new Set<number>(),
     [findMatches, findOpen],
   );
 
@@ -194,15 +198,44 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
       window.removeEventListener("keydown", onKey, { capture: true });
   }, []);
 
-  // Center-ish a row in both columns (unlocked sides get aligned on purpose —
-  // a jump is a deliberate "take me there").
-  const scrollBothToRow = (row: number) => {
-    const target = Math.max(
+  // Cached monospace glyph width for the horizontal reveal — re-measured only
+  // when the computed font signature changes (UI scale / font setting).
+  const charWRef = useRef<{ font: string; w: number } | null>(null);
+  const measureCharW = (): number => {
+    const el = leftRef.current;
+    if (!el) return 7.2;
+    const cs = window.getComputedStyle(el);
+    const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+    if (charWRef.current?.font === font) return charWRef.current.w;
+    const ctx = document.createElement("canvas").getContext("2d");
+    if (!ctx) return 7.2;
+    ctx.font = font;
+    const w = ctx.measureText("0".repeat(64)).width / 64;
+    charWRef.current = { font, w };
+    return w;
+  };
+
+  // Bring a match into view in both columns (unlocked sides get aligned on
+  // purpose — a jump is a deliberate "take me there"): vertical to the upper
+  // third, and HORIZONTAL to the match column — a hit past ~100 columns on a
+  // long line would otherwise stay off-screen after the vertical jump.
+  // Monospace metrics make col×charW exact for ASCII; wide glyphs still land
+  // within the revealed third. Near-zero columns pin fully left.
+  const scrollToMatch = (m: FindMatch) => {
+    const top = Math.max(
       0,
-      offsets[row] - Math.max(0, (viewportH - lineH) / 3),
+      offsets[m.row] - Math.max(0, (viewportH - lineH) / 3),
     );
-    if (leftRef.current) leftRef.current.scrollTop = target;
-    if (rightRef.current) rightRef.current.scrollTop = target;
+    const l = leftRef.current;
+    const left =
+      m.col <= 4 || !l
+        ? 0
+        : Math.max(0, m.col * measureCharW() - l.clientWidth / 3);
+    for (const el of [leftRef.current, rightRef.current]) {
+      if (!el) continue;
+      el.scrollTop = top;
+      el.scrollLeft = left;
+    }
   };
 
   // New query: restart at the first hit and bring it into view (only while
@@ -210,9 +243,9 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
   useEffect(() => {
     setFindCur(0);
     if (findOpenRef.current && findMatches.length > 0) {
-      scrollBothToRow(findMatches[0]);
+      scrollToMatch(findMatches[0]);
     }
-    // scrollBothToRow reads memoized geometry; findMatches is the trigger.
+    // scrollToMatch reads memoized geometry; findMatches is the trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findMatches]);
 
@@ -220,7 +253,7 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
     if (findMatches.length === 0) return;
     const next = (findCur + delta + findMatches.length) % findMatches.length;
     setFindCur(next);
-    scrollBothToRow(findMatches[next]);
+    scrollToMatch(findMatches[next]);
   };
 
   // Lazy-load Shiki on first mount that has a known language. Skipped
@@ -366,7 +399,7 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
   // ring survives a close.
   const findCurRow =
     findOpen && findMatches.length > 0
-      ? findMatches[Math.min(findCur, findMatches.length - 1)]
+      ? findMatches[Math.min(findCur, findMatches.length - 1)].row
       : -1;
 
   const renderColumn = (
