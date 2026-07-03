@@ -332,10 +332,13 @@ function App() {
     searchOpen,
     searchInput,
   };
-  // One-shot: a warp just switched repos and forced "all branches" — the
-  // branch-selection effect must not re-apply the repo's saved selection
-  // over it (the warped-to commit may not be reachable from it).
-  const suppressBranchRestoreRef = useRef(false);
+  // One-shot branch selection for the NEXT repo change, consumed by the
+  // branch-selection effect INSTEAD of the repo's disk-saved selection.
+  // Two writers: a warp forces "all" (the target commit may not be reachable
+  // from the saved filter), and a history restore (applyView) carries the
+  // snapshot's own selection — so Back/Forward re-lands on the branches the
+  // user was actually looking at, not whatever the repo's latest save says.
+  const pendingBranchesRef = useRef<string[] | "all" | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSearchQuery(searchInput), 150);
@@ -631,21 +634,24 @@ function App() {
     if (!singleMode || !selectedRepoPath) {
       setBranches([]);
       setSelectedBranches("all");
+      pendingBranchesRef.current = null; // nothing to consume outside a repo
+      return;
+    }
+    // A pending one-shot selection (warp's forced "all", or a history
+    // restore's snapshot value) wins over the repo's disk-saved selection —
+    // apply it synchronously and skip the disk read entirely.
+    const pending = pendingBranchesRef.current;
+    pendingBranchesRef.current = null;
+    if (pending != null) {
+      setSelectedBranches(pending);
       return;
     }
     setSelectedBranches("all");
-    // A warp forced "all branches" so its target commit is reachable —
-    // consume the one-shot flag instead of re-applying the repo's saved
-    // selection over it. (The branch LIST still loads below for the chip.)
-    const suppressSaved = suppressBranchRestoreRef.current;
-    suppressBranchRestoreRef.current = false;
     let cancelled = false;
     (async () => {
       try {
-        if (!suppressSaved) {
-          const saved = await getBranchSelection(selectedRepoPath);
-          if (!cancelled && saved.length > 0) setSelectedBranches(saved);
-        }
+        const saved = await getBranchSelection(selectedRepoPath);
+        if (!cancelled && saved.length > 0) setSelectedBranches(saved);
       } catch {}
     })();
     return () => {
@@ -698,23 +704,17 @@ function App() {
     setViewFwd([]);
   }, []);
 
-  // Restore a snapshot. Branch handling on a repo change is subtle:
-  //  - snapshot wants "all" (a warp forced it, or the user picked all): force
-  //    it via suppressBranchRestoreRef so the per-repo disk selection can't
-  //    re-hide the commit the "all" was protecting;
-  //  - snapshot wants a specific selection: let the per-repo branch effect
-  //    restore that repo's saved selection from disk (which is what a specific
-  //    snapshot recorded anyway).
-  // Same-repo restores don't fire that effect, so setSelectedBranches below
-  // applies directly. (v.repoPath != null guard: an all-repos restore has no
-  // branch scope, and suppressing there would dangle the flag.)
+  // Restore a snapshot. On a repo CHANGE the branch-selection effect re-runs
+  // and would normally load that repo's disk-saved selection — which may not
+  // be what this snapshot recorded (the user changed filters since, or a warp
+  // had forced "all"). Carry the snapshot's own selection through the
+  // one-shot ref so history restores exactly the branches that were on
+  // screen. Same-repo restores don't fire that effect, so setSelectedBranches
+  // below applies directly. (v.repoPath != null guard: an all-repos restore
+  // has no branch scope — the effect's !singleMode arm clears the ref.)
   const applyView = useCallback((v: ViewSnapshot) => {
-    if (
-      v.branches === "all" &&
-      v.repoPath != null &&
-      v.repoPath !== selectedRepoPathRef.current
-    ) {
-      suppressBranchRestoreRef.current = true;
+    if (v.repoPath != null && v.repoPath !== selectedRepoPathRef.current) {
+      pendingBranchesRef.current = v.branches;
     }
     setWarpAnchor(null);
     setSelectedRepoPath(v.repoPath);
@@ -759,8 +759,11 @@ function App() {
       // repo history, never a hybrid file-scoped view. (Back still restores
       // the file-history view from the snapshot pushed above.)
       setFileHistory(null);
-      suppressBranchRestoreRef.current =
-        c.repoPath !== selectedRepoPathRef.current;
+      // Cross-repo warp: force "all branches" past the disk-saved selection
+      // so the target commit is reachable (same-repo warps apply directly).
+      if (c.repoPath !== selectedRepoPathRef.current) {
+        pendingBranchesRef.current = "all";
+      }
       setSelectedRepoPath(c.repoPath);
       setSelectedBranches("all");
       setSelectedAuthors("all");
