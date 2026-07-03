@@ -181,6 +181,9 @@ export function SideBySideDiff({ text, filePath, locked }: Props) {
         return;
       }
       if (e.key === "Escape" && findOpenRef.current) {
+        // A context menu is the topmost layer — its own Esc handler must win;
+        // this capture listener would otherwise close the find bar UNDER it.
+        if (document.querySelector(".context-menu")) return;
         e.preventDefault();
         e.stopImmediatePropagation();
         setFindOpen(false);
