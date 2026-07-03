@@ -1109,6 +1109,27 @@ pub fn repo_refs_fingerprint(
     let repo = Repository::open(repo_path)
         .with_context(|| format!("open repo {}", repo_path.display()))?;
     let mut parts: Vec<String> = Vec::new();
+
+    // HEAD in BOTH arms: repo_commits pushes peeled HEAD as a walk root
+    // (detached-HEAD commits — rebase stops, agent worktrees — must show),
+    // and branch labels key off the current-branch NAME, so a plain
+    // `git switch` must also change the fingerprint.
+    if let Ok(head) = repo.head() {
+        let name = head.shorthand().unwrap_or("HEAD").to_string();
+        if let Ok(c) = head.peel_to_commit() {
+            parts.push(format!("HEAD@{name}:{}", c.id()));
+        }
+    }
+    // Tags in both arms: tag badges come from collect_tagged_oids
+    // unconditionally, so a new/moved tag must refresh the view too.
+    if let Ok(refs) = repo.references_glob("refs/tags/*") {
+        for r in refs.flatten() {
+            if let (Some(n), Some(oid)) = (r.name(), r.target()) {
+                parts.push(format!("{n}:{oid}"));
+            }
+        }
+    }
+
     match branches {
         Some(sel) => {
             // Resolve exactly like repo_commits' explicit mode: full ref

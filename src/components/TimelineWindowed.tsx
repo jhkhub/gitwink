@@ -182,6 +182,9 @@ export function TimelineWindowed({
   // reads the live expanded state without re-subscribing on every toggle.
   const expandedKeyRef = useRef<string | null>(null);
   expandedKeyRef.current = expandedKey;
+  // Live mirror of `inactive` for the once-mounted invalidation listener.
+  const inactiveRef = useRef(false);
+  inactiveRef.current = !!inactive;
   // Ref mirror of `status` for the same listener — a delete-burst reload
   // must yield to an in-flight reload instead of cancelling it.
   const statusRef = useRef(status);
@@ -338,6 +341,13 @@ export function TimelineWindowed({
     setTimeout(() => setCopyStatus("idle"), result === "copied" ? 1500 : 2000);
   }, []);
 
+  // Going hidden closes any open context menu — its document-level Esc
+  // listener would otherwise survive invisibly and eat the next Esc meant
+  // for the view on top.
+  useEffect(() => {
+    if (inactive) setContextMenu(null);
+  }, [inactive]);
+
   // Coarse clock tick so relative times ("3m") don't freeze on a pinned,
   // idle panel — a freshness-glance tool must not claim "3m" an hour later.
   // 60s matches the coarsest sub-hour unit; the virtualized list makes the
@@ -460,9 +470,13 @@ export function TimelineWindowed({
           // At the very top with nothing expanded → auto-advance to the
           // latest. If a row is expanded the reader is mid-view: don't yank
           // the page out from under them — surface the "N new" pill instead
-          // and let them opt in.
+          // and let them opt in. A HIDDEN instance (display:none host while
+          // search / single-repo sits on top) must never auto-advance:
+          // scrollTop reads 0 without a CSS box, which would masquerade as
+          // "at the top" and reset the preserved scroll/selection.
           if (
             el &&
+            !inactiveRef.current &&
             el.scrollTop < ROW_H * 2 &&
             expandedKeyRef.current == null
           ) {
@@ -498,13 +512,16 @@ export function TimelineWindowed({
     if (inactive) return;
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
-      // Typing fields AND focused interactive controls own their keys — an
-      // Enter on a Tab-focused button must activate the button, not toggle
-      // or warp the selected commit.
+      // Typing fields own EVERY key; other interactive controls (buttons,
+      // links) own only their ACTIVATION keys — Enter on a Tab-focused
+      // button must activate the button, but j/k/c must keep navigating
+      // the timeline even right after clicking a chip or Copy button.
+      if (target?.closest('input, textarea, [contenteditable="true"]')) {
+        return;
+      }
       if (
-        target?.closest(
-          'input, textarea, [contenteditable="true"], button, a, select, [role="checkbox"]',
-        )
+        (e.key === "Enter" || e.key === " ") &&
+        target?.closest('button, a, select, [role="checkbox"]')
       ) {
         return;
       }

@@ -185,8 +185,10 @@ export function DiffApp() {
     const key = `${ctx.repoPath}:${ctx.hash}`;
     let cancelled = false;
     // Clear stale metadata up front so selectedFileMeta can't resolve against
-    // the previous commit's files while this loads.
+    // the previous commit's files while this loads — filesTotal included, or
+    // the sidebar footer would flash "Showing 0 of N" with the OLD commit's N.
     setFiles([]);
+    setFilesTotal(0);
     setFilesCtx(null);
     setFilesError(false);
     (async () => {

@@ -365,16 +365,22 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         )
         .unwrap_or(false);
     if !purged {
-        let _ = conn.execute(
-            "DELETE FROM diffs WHERE file_path GLOB '*[[]*' \
-             OR file_path GLOB '*[*]*' OR file_path GLOB '*[?]*'",
-            [],
-        );
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value, updated_at) \
-             VALUES ('diffs_fnmatch_purge_v1', '1', strftime('%s','now'))",
-            [],
-        );
+        // Only mark done when the DELETE actually ran — a locked/failed pass
+        // must retry next launch, not leave poisoned rows behind forever.
+        if conn
+            .execute(
+                "DELETE FROM diffs WHERE file_path GLOB '*[[]*' \
+                 OR file_path GLOB '*[*]*' OR file_path GLOB '*[?]*'",
+                [],
+            )
+            .is_ok()
+        {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value, updated_at) \
+                 VALUES ('diffs_fnmatch_purge_v1', '1', strftime('%s','now'))",
+                [],
+            );
+        }
     }
 
     // v0.1.2 cleanup: the v0.1.1 orchestrator used `fs::canonicalize`

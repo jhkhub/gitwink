@@ -912,9 +912,15 @@ function App() {
     // commits…"), so a failed fetch can never leave repo A's commits sitting
     // under repo B's header. A same-signature re-pull (refreshNonce) keeps
     // the rows to avoid a flash.
-    const sig = `${selectedRepoPath}|${JSON.stringify(selectedBranches)}|${windowDays}|${
-      fileHistory ? `file:${fileHistory.filePath}` : ""
-    }`;
+    // File-history mode IGNORES the branch/window lenses, so they must not
+    // be part of its signature: the async per-repo saved-branch restore lands
+    // AFTER the history rows load, and a signature that included branches
+    // would clear them to a permanent "Loading commits…" (the file-history
+    // effect has no reason to re-run).
+    const sig =
+      fileHistory && fileHistory.repoPath === selectedRepoPath
+        ? `${selectedRepoPath}|file:${fileHistory.filePath}`
+        : `${selectedRepoPath}|${JSON.stringify(selectedBranches)}|${windowDays}`;
     const sameView = commitsSigRef.current === sig;
     if (!sameView) {
       commitsSigRef.current = sig;
@@ -956,8 +962,12 @@ function App() {
         }
       } catch {
         // Repo unopenable (moved, disconnected drive) — an honest error
-        // state, never the previous repo's rows.
+        // state, never the previous repo's rows. Drop the fingerprint too:
+        // if the repo recovers with unchanged refs, the next re-pull must
+        // RUN (and clear the error), not fingerprint-skip into a permanently
+        // latched "Couldn't open this repo".
         if (!cancelled) {
+          commitsRefsFpRef.current = null;
           setCommits([]);
           setCommitsError(true);
         }

@@ -150,17 +150,22 @@ export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
   const geomRef = useRef({ items, offsets });
   geomRef.current = { items, offsets };
   const anchorFileKeyRef = useRef<string | undefined>(undefined);
-  const topLineRef = useRef<{ line: number; side: "left" | "right" } | null>(
-    null,
-  );
+  type TopLine = { line: number; side: "left" | "right" } | null;
+  const topLineRef = useRef<TopLine>(null);
+  // The right column tracked separately, so an UNLOCKED right side
+  // re-anchors to its own reading position, not the left's.
+  const topLineRightRef = useRef<TopLine>(null);
 
-  // Remember the top visible line (by old/new line NUMBER — those survive a
-  // context change) on every scroll, so a same-file text swap can restore it.
-  const captureTopLine = () => {
-    const el = leftRef.current;
-    if (!el) return;
+  // Remember each column's top visible line (by old/new line NUMBER — those
+  // survive a context change) on every scroll, so a same-file text swap can
+  // restore the reading position.
+  const topLineFor = (
+    el: HTMLDivElement | null,
+    prefer: "left" | "right",
+  ): TopLine => {
+    if (!el) return null;
     const { items: its, offsets: offs } = geomRef.current;
-    if (its.length === 0) return;
+    if (its.length === 0) return null;
     const y = el.scrollTop;
     let lo = 0;
     let hi = its.length - 1;
@@ -177,15 +182,23 @@ export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
     for (let i = ans; i < Math.min(its.length, ans + 60); i++) {
       const it = its[i];
       if (it.kind !== "row") continue;
-      if (it.left.lineNum != null) {
-        topLineRef.current = { line: it.left.lineNum, side: "left" };
-        return;
+      const first = prefer === "left" ? it.left : it.right;
+      const second = prefer === "left" ? it.right : it.left;
+      if (first.lineNum != null) {
+        return { line: first.lineNum, side: prefer };
       }
-      if (it.right.lineNum != null) {
-        topLineRef.current = { line: it.right.lineNum, side: "right" };
-        return;
+      if (second.lineNum != null) {
+        return {
+          line: second.lineNum,
+          side: prefer === "left" ? "right" : "left",
+        };
       }
     }
+    return null;
+  };
+  const captureTopLine = () => {
+    topLineRef.current = topLineFor(leftRef.current, "left");
+    topLineRightRef.current = topLineFor(rightRef.current, "right");
   };
 
   // Same-file text swap (a ±3/±25/Full context toggle, kept mounted by
@@ -195,24 +208,36 @@ export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
   useLayoutEffect(() => {
     const sameFile = fileKey != null && anchorFileKeyRef.current === fileKey;
     anchorFileKeyRef.current = fileKey;
-    let top = 0;
-    if (sameFile && topLineRef.current) {
-      const { line, side } = topLineRef.current;
-      const idx = items.findIndex(
+    const idxOf = (a: TopLine): number => {
+      if (!a) return -1;
+      const { line, side } = a;
+      return items.findIndex(
         (it) =>
           it.kind === "row" &&
           (side === "left"
             ? it.left.lineNum != null && it.left.lineNum >= line
             : it.right.lineNum != null && it.right.lineNum >= line),
       );
-      if (idx > 0) top = offsets[idx];
+    };
+    let topL = 0;
+    let topR = 0;
+    if (sameFile) {
+      const iL = idxOf(topLineRef.current);
+      if (iL > 0) topL = offsets[iL];
+      topR = topL;
+      // Unlocked columns keep their own positions across the swap.
+      if (!locked) {
+        const iR = idxOf(topLineRightRef.current);
+        if (iR > 0) topR = offsets[iR];
+      }
     } else {
       topLineRef.current = null;
+      topLineRightRef.current = null;
     }
-    if (leftRef.current) leftRef.current.scrollTop = top;
-    if (rightRef.current) rightRef.current.scrollTop = top;
-    setScrollTopL(top);
-    setScrollTopR(top);
+    if (leftRef.current) leftRef.current.scrollTop = topL;
+    if (rightRef.current) rightRef.current.scrollTop = topR;
+    setScrollTopL(topL);
+    setScrollTopR(topR);
     // items/offsets are derived from text — text is the real trigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [text]);
@@ -416,6 +441,7 @@ export function SideBySideDiff({ text, filePath, fileKey, locked }: Props) {
           rafR = 0;
           setScrollTopR(r.scrollTop);
           if (locked) setScrollTopL(r.scrollTop);
+          captureTopLine();
         });
       }
     };

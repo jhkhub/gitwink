@@ -413,13 +413,14 @@ export function Timeline({
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
-      // Typing fields AND focused interactive controls own their keys — an
-      // Enter on a Tab-focused button must activate the button, not toggle
-      // the selected commit.
+      // Typing fields own EVERY key; other interactive controls own only
+      // their ACTIVATION keys (see TimelineWindowed for rationale).
+      if (target?.closest('input, textarea, [contenteditable="true"]')) {
+        return;
+      }
       if (
-        target?.closest(
-          'input, textarea, [contenteditable="true"], button, a, select, [role="checkbox"]',
-        )
+        (e.key === "Enter" || e.key === " ") &&
+        target?.closest('button, a, select, [role="checkbox"]')
       ) {
         return;
       }

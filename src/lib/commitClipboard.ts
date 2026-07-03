@@ -22,7 +22,7 @@ export async function copyCommitAiContext(
   commit: CommitSummary,
 ): Promise<"copied" | "error"> {
   try {
-    const { files } = await changedFiles(commit.repoPath, commit.hash);
+    const { files, total } = await changedFiles(commit.repoPath, commit.hash);
     let diffText: string | null = null;
     const totalLines = files.reduce(
       (acc, f) => acc + (f.isBinary ? 0 : f.insertions + f.deletions),
@@ -40,7 +40,13 @@ export async function copyCommitAiContext(
         diffText = null;
       }
     }
-    await writeText(buildAiContext(commit, files, diffText));
+    let text = buildAiContext(commit, files, diffText);
+    // The backend caps huge file lists (vendor-bump commits) — an AI-context
+    // copy must SAY so, never silently pretend the list is complete.
+    if (total > files.length) {
+      text += `\n(file list truncated: showing ${files.length} of ${total} changed files)\n`;
+    }
+    await writeText(text);
     return "copied";
   } catch {
     return "error";

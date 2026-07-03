@@ -2517,10 +2517,12 @@ body,
 }
 
 /* Marker appended to a render-truncated pathological line (see
-   LINE_RENDER_CAP in SideBySideDiff). */
+   LINE_RENDER_CAP in SideBySideDiff). Not selectable — a drag-copy must
+   never land this fabricated text in the clipboard. */
 .sbs-line-truncated {
   opacity: 0.5;
   font-style: italic;
+  user-select: none;
 }
 
 /* Match tints — one specificity step above the add/delete row tints

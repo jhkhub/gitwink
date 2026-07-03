@@ -48,6 +48,9 @@ export function ChipDropdown({
       // must not close the dropdown.
       if (e.isComposing) return;
       if (e.key === "Escape") {
+        // The update modal is the topmost layer — it must win Esc even if a
+        // dropdown was left open beneath it.
+        if (document.querySelector(".update-modal")) return;
         onClose();
         // One Esc = one layer: without this, the same keypress fell through
         // to App's cascade and ALSO collapsed the open commit expansion —

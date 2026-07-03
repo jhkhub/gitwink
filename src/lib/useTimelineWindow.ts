@@ -611,8 +611,10 @@ export function useTimelineWindow(
       // refresh could join a newer filter-change reload and clobber its
       // recovery with a rank-based "current" reload.
       if (!res.applied || seq !== effectSeqRef.current || !needsRefill) return;
-      // Claim the key up front so a rapid remount can't stack a second scan
-      // behind this one; a failed refill retries on the next summon's nonce.
+      // Claim the key up front so a rapid remount can't queue a duplicate
+      // same-window scan behind this one (the backend serializes; it no
+      // longer skips). A FAILED refill releases the claim so the next mount
+      // retries instead of silently never refilling this (nonce, window).
       lastRefilledKey = refillKey;
       refreshRecentCommits(paramsRef.current.windowDays)
         .then(() => {
@@ -620,7 +622,9 @@ export function useTimelineWindow(
             void machinery.reload("current", false, false);
           }
         })
-        .catch(() => {});
+        .catch(() => {
+          if (lastRefilledKey === refillKey) lastRefilledKey = "";
+        });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterKey]);
