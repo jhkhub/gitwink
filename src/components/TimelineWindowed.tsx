@@ -50,6 +50,14 @@ export interface SearchControl {
   activateSelected: () => void;
 }
 
+/** Imperative expansion control for App's Esc cascade: collapse() closes the
+ * open commit expansion and reports whether it did. Owning this in App's
+ * single cascade (instead of a competing window listener here) makes the Esc
+ * layer order deterministic — bubble-listener registration order is not. */
+export interface ExpansionControl {
+  collapse: () => boolean;
+}
+
 interface Props {
   /** repo-id filter, or null for all repos */
   repoIds: number[] | null;
@@ -90,6 +98,8 @@ interface Props {
   searchScopeLabel?: string | null;
   /** Widen a scoped search to all repos and re-run the same query. */
   onWidenSearch?: () => void;
+  /** Filled with the collapse control App's Esc cascade drives. */
+  expansionControlRef?: React.MutableRefObject<ExpansionControl | null>;
 }
 
 function formatFullTime(unixSeconds: number): string {
@@ -134,6 +144,7 @@ export function TimelineWindowed({
   onResultCount,
   searchScopeLabel,
   onWidenSearch,
+  expansionControlRef,
 }: Props) {
   const {
     rows,
@@ -325,6 +336,22 @@ export function TimelineWindowed({
     setExpandedKey((cur) => (cur === key ? null : key));
   }, []);
 
+  // Hand App's Esc cascade the collapse control (see ExpansionControl). Reads
+  // through the live ref so the registration never has to re-run per keypress.
+  useEffect(() => {
+    if (!expansionControlRef) return;
+    expansionControlRef.current = {
+      collapse: () => {
+        if (expandedKeyRef.current == null) return false;
+        setExpandedKey(null);
+        return true;
+      },
+    };
+    return () => {
+      expansionControlRef.current = null;
+    };
+  }, [expansionControlRef]);
+
   // `ref` for the open expansion's <li>: measure its height (it grows as
   // ChangedFiles loads in) and keep `expansionH` current. Called with null
   // when the expansion unmounts — which happens BOTH on a real collapse and
@@ -478,11 +505,10 @@ export function TimelineWindowed({
           void copyAiContext(c);
           e.preventDefault();
         }
-      } else if (e.key === "Escape" && expandedKey != null) {
-        setExpandedKey(null);
-        e.preventDefault();
-        e.stopImmediatePropagation();
       }
+      // Escape is NOT handled here: collapsing the expansion is a rung in
+      // App's Esc cascade (via expansionControlRef), so the layer order can't
+      // depend on window-listener registration order.
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -491,7 +517,6 @@ export function TimelineWindowed({
     selected,
     count,
     toggleExpand,
-    expandedKey,
     copyAiContext,
     searchMode,
     onWarp,

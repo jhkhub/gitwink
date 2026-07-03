@@ -12,6 +12,7 @@ import { SearchBar } from "./components/SearchBar";
 import { Timeline } from "./components/Timeline";
 import {
   TimelineWindowed,
+  type ExpansionControl,
   type SearchControl,
 } from "./components/TimelineWindowed";
 import {
@@ -291,6 +292,10 @@ function App() {
   } | null>(null);
   const warpNonceRef = useRef(0);
   const searchControlRef = useRef<SearchControl | null>(null);
+  // The mounted timeline's expansion-collapse control — an explicit rung in
+  // the Esc cascade below, so "Esc closes the expansion first" can't lose a
+  // window-listener registration-order race.
+  const expansionControlRef = useRef<ExpansionControl | null>(null);
   // Live mirror of selectedRepoPath for the once-mounted panel-shown / fetch
   // handlers (which would otherwise close over a stale value).
   const selectedRepoPathRef = useRef<string | null>(null);
@@ -1060,9 +1065,9 @@ function App() {
 
   // ----- view-history keys + ESC cascade -----
   // Alt+←/→ step through the unified view history. Esc: modal → chip →
-  // expansion (handled in Timeline) → search → view-back → single-repo →
-  // hide panel. The single "view-back" rung subsumes the old warp-return /
-  // file-history-exit rungs (both pushed a view when they navigated).
+  // expansion (expansionControlRef rung below) → search → view-back →
+  // single-repo → hide panel. The single "view-back" rung subsumes the old
+  // warp-return / file-history-exit rungs (both pushed a view on navigate).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Top layers own the keyboard: the modal closes on Esc, a dropdown
@@ -1083,6 +1088,14 @@ function App() {
         return;
       }
       if (e.key !== "Escape") return;
+      // An open commit expansion is the innermost layer — collapse it first.
+      // The mounted timeline registers this control (ExpansionControl); owning
+      // the rung here keeps the cascade order deterministic instead of racing
+      // window-listener registration order.
+      if (expansionControlRef.current?.collapse()) {
+        e.preventDefault();
+        return;
+      }
       // The search input's own Esc is stopPropagation'd; this covers Esc while
       // focus is on the result list.
       if (searchOpen) {
@@ -1631,6 +1644,7 @@ function App() {
             onSelectRepo={changeRepoPath}
             searchScopeLabel={searchScopeLabel}
             onWidenSearch={canWidenSearch ? widenSearchScope : undefined}
+            expansionControlRef={expansionControlRef}
           />
         ) : singleMode ? (
           filteredCommits == null ? (
@@ -1723,6 +1737,7 @@ function App() {
               resetKey={`${fileHistory ? `file:${fileHistory.filePath}` : ""}${JSON.stringify(selectedBranches)}|${windowDays}|${JSON.stringify(selectedAuthors)}`}
               anchor={warpAnchor}
               linear={fileHistory != null}
+              expansionControlRef={expansionControlRef}
             />
           )
         ) : (
@@ -1735,6 +1750,7 @@ function App() {
             onShowAllTime={() => changeWindowDays("all")}
             onClearAuthors={() => changeAuthors("all")}
             onOpenSearch={openSearch}
+            expansionControlRef={expansionControlRef}
           />
         )}
         {allRepos.length > 0 && (

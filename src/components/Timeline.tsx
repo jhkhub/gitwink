@@ -35,6 +35,7 @@ import type { BranchInfo, CommitSummary } from "../types";
 import { ChangedFiles } from "./ChangedFiles";
 import { CommitDetail } from "./CommitDetail";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
+import type { ExpansionControl } from "./TimelineWindowed";
 import { LaneGraph } from "./LaneGraph";
 
 /** Extra rows rendered above/below the viewport for scroll smoothness. */
@@ -70,6 +71,8 @@ interface Props {
    *  draw a single spine linking each revision to the next older one —
    *  dashed, to signal the (untouching) commits bridged over. */
   linear?: boolean;
+  /** Filled with the collapse control App's Esc cascade drives. */
+  expansionControlRef?: React.MutableRefObject<ExpansionControl | null>;
 }
 
 /** Full local datetime for hover tooltips — 24-hour, 2-digit components in
@@ -93,6 +96,7 @@ export function Timeline({
   resetKey,
   anchor,
   linear,
+  expansionControlRef,
 }: Props) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(0);
@@ -341,6 +345,22 @@ export function Timeline({
     setExpandedHash((cur) => (cur === hash ? null : hash));
   }, []);
 
+  // Hand App's Esc cascade the collapse control (see ExpansionControl in
+  // TimelineWindowed). Reads through the live ref — never re-registers.
+  useEffect(() => {
+    if (!expansionControlRef) return;
+    expansionControlRef.current = {
+      collapse: () => {
+        if (expandedHashRef.current == null) return false;
+        setExpandedHash(null);
+        return true;
+      },
+    };
+    return () => {
+      expansionControlRef.current = null;
+    };
+  }, [expansionControlRef]);
+
   // `ref` for the open expansion's <li>: measure its height (it grows as
   // ChangedFiles loads in) and keep `expansionH` current. Called with null
   // when the expansion unmounts — on a real collapse AND when the open row
@@ -395,16 +415,14 @@ export function Timeline({
           void copyAiContext(c);
           e.preventDefault();
         }
-      } else if (e.key === "Escape" && expandedHash != null) {
-        setExpandedHash(null);
-        e.preventDefault();
-        // Block App's panel-hide Esc handler when we've consumed the key.
-        e.stopImmediatePropagation();
       }
+      // Escape is NOT handled here: collapsing the expansion is a rung in
+      // App's Esc cascade (via expansionControlRef), so the layer order can't
+      // depend on window-listener registration order.
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commits, selected, total, toggleExpand, expandedHash, copyAiContext]);
+  }, [commits, selected, total, toggleExpand, copyAiContext]);
 
   // Bring the selected row into view. Uses the live row geometry so a
   // selection below the open expansion still lands right.
