@@ -933,12 +933,19 @@ fn build_remote_badge_map(tips: &[RemoteTip]) -> HashMap<Oid, RemoteBadge> {
 }
 
 /// Walk `tip` and report which of `targets` it reaches, bounded by
-/// `scan_cap` so a branch with deep history can't pin first-paint.
+/// `scan_cap` so a branch with deep history can't pin first-paint — and by
+/// `floor_ts`: in a TIME-sorted walk, once commits are older than the oldest
+/// target (all callers know it), no remaining target can still appear, so
+/// the walk stops there (CUTOFF_SLOP tolerates clock skew). Without this
+/// bound, ONE unreachable target (the normal state right after an auto-fetch
+/// puts remote-only commits in the list) degenerated every branch's walk to
+/// the full 5,000-pop cap on every panel summon. 0 disables the floor.
 fn limited_reachable_membership(
     repo: &Repository,
     tip: Oid,
     targets: &HashSet<Oid>,
     scan_cap: usize,
+    floor_ts: i64,
 ) -> HashSet<Oid> {
     let mut found: HashSet<Oid> = HashSet::new();
     if targets.is_empty() {
@@ -956,6 +963,7 @@ fn limited_reachable_membership(
         return found;
     }
 
+    let mut slop = 0usize;
     for (i, oid_res) in rw.enumerate() {
         if i >= scan_cap || found.len() == targets.len() {
             break;
@@ -965,6 +973,20 @@ fn limited_reachable_membership(
         };
         if targets.contains(&oid) {
             found.insert(oid);
+            slop = 0;
+            continue;
+        }
+        if floor_ts > 0 {
+            if let Ok(c) = repo.find_commit(oid) {
+                if c.time().seconds() < floor_ts {
+                    slop += 1;
+                    if slop >= CUTOFF_SLOP {
+                        break;
+                    }
+                } else {
+                    slop = 0;
+                }
+            }
         }
     }
     found
@@ -984,6 +1006,11 @@ fn compute_branch_labels(
     repo: &Repository,
     head_branch_name: Option<&str>,
     targets: &HashSet<Oid>,
+    // Timestamp of the OLDEST target (0 = unknown): every membership walk
+    // stops once it drops below this, instead of paying the full scan cap
+    // per branch whenever any target is unreachable (see
+    // limited_reachable_membership).
+    floor_ts: i64,
 ) -> HashMap<Oid, Option<String>> {
     let mut labels: HashMap<Oid, Option<String>> = HashMap::new();
     if targets.is_empty() {
@@ -1004,7 +1031,8 @@ fn compute_branch_labels(
         .and_then(|h| h.peel_to_commit().ok())
         .map(|c| c.id())
     {
-        let hits = limited_reachable_membership(repo, tip, targets, BRANCH_LABEL_SCAN_CAP);
+        let hits =
+            limited_reachable_membership(repo, tip, targets, BRANCH_LABEL_SCAN_CAP, floor_ts);
         for oid in hits {
             labels.insert(oid, None);
         }
@@ -1034,7 +1062,13 @@ fn compute_branch_labels(
             let Some(tip) = r.target() else {
                 continue;
             };
-            let hits = limited_reachable_membership(repo, tip, &remaining, BRANCH_LABEL_SCAN_CAP);
+            let hits = limited_reachable_membership(
+                repo,
+                tip,
+                &remaining,
+                BRANCH_LABEL_SCAN_CAP,
+                floor_ts,
+            );
             for oid in hits {
                 labels.insert(oid, Some(name.clone()));
                 remaining.remove(&oid);
@@ -1216,9 +1250,12 @@ pub fn repo_commits(
     }
 
     // Pass 2: branch labels, computed only against the OIDs we'll actually
-    // return — bounded per-branch and short-circuits when all targets resolve.
+    // return — bounded per-branch, short-circuits when all targets resolve,
+    // and floored at the oldest returned commit's time.
     let targets: HashSet<Oid> = raw.iter().map(|(oid, _)| *oid).collect();
-    let labels = compute_branch_labels(&repo, head_branch_name.as_deref(), &targets);
+    let label_floor = raw.iter().map(|(_, c)| c.time().seconds()).min().unwrap_or(0);
+    let labels =
+        compute_branch_labels(&repo, head_branch_name.as_deref(), &targets, label_floor);
 
     let mut out: Vec<CommitSummary> = Vec::with_capacity(raw.len());
     for (oid, commit) in raw {
@@ -1356,7 +1393,9 @@ pub fn file_history(repo_path: &Path, file_path: &str) -> Result<Vec<CommitSumma
     }
 
     let targets: HashSet<Oid> = raw.iter().map(|(oid, _)| *oid).collect();
-    let labels = compute_branch_labels(&repo, head_branch_name.as_deref(), &targets);
+    let label_floor = raw.iter().map(|(_, c)| c.time().seconds()).min().unwrap_or(0);
+    let labels =
+        compute_branch_labels(&repo, head_branch_name.as_deref(), &targets, label_floor);
 
     let mut out: Vec<CommitSummary> = Vec::with_capacity(raw.len());
     for (oid, commit) in raw {
@@ -1518,7 +1557,9 @@ pub fn recent_commits(
     // O(branches × history) prefetch — now bounded per-branch and exits
     // early once every target is resolved.
     let targets: HashSet<Oid> = raw.iter().map(|(oid, _)| *oid).collect();
-    let labels = compute_branch_labels(&repo, head_branch_name.as_deref(), &targets);
+    let label_floor = raw.iter().map(|(_, c)| c.time().seconds()).min().unwrap_or(0);
+    let labels =
+        compute_branch_labels(&repo, head_branch_name.as_deref(), &targets, label_floor);
 
     let mut out: Vec<CommitSummary> = Vec::with_capacity(raw.len());
     for (oid, commit) in raw {
