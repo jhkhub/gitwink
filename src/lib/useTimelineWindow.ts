@@ -28,6 +28,12 @@ import {
 
 /** Rows fetched per keyset extend page. */
 const PAGE_SIZE = 60;
+
+/** Module-scope: the (refreshNonce, windowDays) pair whose git→cache refill
+ * already ran this session. A REMOUNT with the same pair (a search bounce, a
+ * drill-in → Esc round-trip) must not re-run the serial all-repo git scan —
+ * the cache is already fresh for this summon. */
+let lastRefilledKey = "";
 /** A jump / recovery loads this many rows newer + older of the anchor — a
  *  cushion so scrolling around the landing spot stays smooth. */
 const ANCHOR_BEFORE = 60;
@@ -577,11 +583,17 @@ export function useTimelineWindow(
     const isInitial = windowRef.current.filter == null;
     const prev = reloadKeyRef.current;
     const filtersChanged = !isInitial && filtersKey !== prev.filtersKey;
+    // Module-scope dedup: a fresh MOUNT still reloads from cache, but only
+    // chains the git→cache fleet scan if this (nonce, window) pair hasn't
+    // already refilled — otherwise every search open/close or drill-in→Esc
+    // re-ran the full serial scan over every repo.
+    const refillKey = `${refreshNonce}|${windowDays ?? "all"}`;
     const needsRefill =
       !skipRefill &&
       (isInitial ||
         windowDays !== prev.windowDays ||
-        refreshNonce !== prev.refreshNonce);
+        refreshNonce !== prev.refreshNonce) &&
+      refillKey !== lastRefilledKey;
     reloadKeyRef.current = { filtersKey, windowDays, refreshNonce };
 
     // A refreshNonce-only bump (filters unchanged) reloads in place with no
@@ -599,6 +611,9 @@ export function useTimelineWindow(
       // refresh could join a newer filter-change reload and clobber its
       // recovery with a rank-based "current" reload.
       if (!res.applied || seq !== effectSeqRef.current || !needsRefill) return;
+      // Claim the key up front so a rapid remount can't stack a second scan
+      // behind this one; a failed refill retries on the next summon's nonce.
+      lastRefilledKey = refillKey;
       refreshRecentCommits(paramsRef.current.windowDays)
         .then(() => {
           if (seq === effectSeqRef.current && res.qid === queryRef.current) {

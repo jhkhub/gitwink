@@ -2395,6 +2395,16 @@ body,
   gap: calc(6px * var(--ui-scale, 1));
 }
 
+/* Host for the always-mounted browse timeline: `contents` when visible (the
+   wrapper vanishes from layout so the flex column is unchanged), `none` when
+   search / single-repo mode sits on top — state survives, layout doesn't. */
+.browse-host {
+  display: contents;
+}
+.browse-host-hidden {
+  display: none;
+}
+
 /* "Showing N of M changed files" — a vendor-bump-scale commit's list is
    capped backend-side; say so instead of silently truncating. */
 .changed-files-more,

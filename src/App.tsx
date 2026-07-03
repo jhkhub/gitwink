@@ -1753,29 +1753,32 @@ function App() {
             addError={addError}
             onBrowse={() => void handleAddRepo()}
           />
-        ) : searching ? (
-          // Active search: the timeline body IS the result list — the
-          // same windowed machinery with the query as one more filter
-          // (time/author bypassed, repo scope respected). Enter / ↗
-          // warps into the commit's single-repo history.
-          <TimelineWindowed
-            key="search-results"
-            repoIds={searchRepoIds}
-            authors={null}
-            windowDays={null}
-            refreshNonce={refreshNonce}
-            query={searchQuery}
-            skipRefill
-            searchMode
-            onWarp={performWarp}
-            searchControlRef={searchControlRef}
-            onResultCount={setSearchCount}
-            onSelectRepo={changeRepoPath}
-            searchScopeLabel={searchScopeLabel}
-            onWidenSearch={canWidenSearch ? widenSearchScope : undefined}
-            expansionControlRef={expansionControlRef}
-          />
-        ) : singleMode ? (
+        ) : (
+          <>
+            {searching && (
+              // Active search: the timeline body IS the result list — the
+              // same windowed machinery with the query as one more filter
+              // (time/author bypassed, repo scope respected). Enter / ↗
+              // warps into the commit's single-repo history.
+              <TimelineWindowed
+                key="search-results"
+                repoIds={searchRepoIds}
+                authors={null}
+                windowDays={null}
+                refreshNonce={refreshNonce}
+                query={searchQuery}
+                skipRefill
+                searchMode
+                onWarp={performWarp}
+                searchControlRef={searchControlRef}
+                onResultCount={setSearchCount}
+                onSelectRepo={changeRepoPath}
+                searchScopeLabel={searchScopeLabel}
+                onWidenSearch={canWidenSearch ? widenSearchScope : undefined}
+                expansionControlRef={expansionControlRef}
+              />
+            )}
+            {!searching && singleMode && (
           filteredCommits == null ? (
             <p className="panel-empty">Loading commits…</p>
           ) : commitsError ? (
@@ -1887,18 +1890,31 @@ function App() {
               expansionControlRef={expansionControlRef}
             />
           )
-        ) : (
-          <TimelineWindowed
-            repoIds={repoIds}
-            authors={selectedAuthors === "all" ? null : selectedAuthors}
-            windowDays={toWindowParam(windowDays)}
-            refreshNonce={refreshNonce}
-            onSelectRepo={changeRepoPath}
-            onShowAllTime={() => changeWindowDays("all")}
-            onClearAuthors={() => changeAuthors("all")}
-            onOpenSearch={openSearch}
-            expansionControlRef={expansionControlRef}
-          />
+            )}
+            {/* The browse all-repos timeline stays MOUNTED while search or
+                single-repo mode sits on top: hiding instead of unmounting
+                preserves its scroll/selection/expansion across a search
+                bounce or a drill-in → Esc, and skips the remount reload.
+                `inactive` hands the keyboard + Esc rung to the visible view. */}
+            <div
+              className={
+                searching || singleMode ? "browse-host-hidden" : "browse-host"
+              }
+            >
+              <TimelineWindowed
+                repoIds={repoIds}
+                authors={selectedAuthors === "all" ? null : selectedAuthors}
+                windowDays={toWindowParam(windowDays)}
+                refreshNonce={refreshNonce}
+                onSelectRepo={changeRepoPath}
+                onShowAllTime={() => changeWindowDays("all")}
+                onClearAuthors={() => changeAuthors("all")}
+                onOpenSearch={openSearch}
+                expansionControlRef={expansionControlRef}
+                inactive={searching || singleMode}
+              />
+            </div>
+          </>
         )}
         {allRepos.length > 0 && (
           <div className="panel-footer-hint">

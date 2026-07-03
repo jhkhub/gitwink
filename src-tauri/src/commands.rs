@@ -294,12 +294,34 @@ pub async fn recent_commits(
 /// re-pulls everything it shows from the cache, so the full row array the
 /// old refill shipped over IPC — up to 5,000 CommitSummary structs per
 /// panel summon — was serialized, parsed, and immediately garbage.
+/// Single-flight guard: rapid summon/remount bursts must not stack serial
+/// fleet scans convoying on SQLite's write lock.
+static REFILL_INFLIGHT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 #[tauri::command]
 pub async fn refresh_recent_commits(
     app: AppHandle,
     window_days: Option<i64>,
 ) -> Result<usize, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        use std::sync::atomic::Ordering;
+        if REFILL_INFLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            // A scan is already running; its upsert lands shortly and the
+            // caller re-pulls from cache afterwards anyway. (The count is
+            // ignored by the only caller — see useTimelineWindow.)
+            return Ok(0);
+        }
+        struct Release;
+        impl Drop for Release {
+            fn drop(&mut self) {
+                REFILL_INFLIGHT.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        let _release = Release;
         scan_and_cache_recent_commits(&app, window_days).map(|rows| rows.len())
     })
     .await

@@ -101,6 +101,10 @@ interface Props {
   onWidenSearch?: () => void;
   /** Filled with the collapse control App's Esc cascade drives. */
   expansionControlRef?: React.MutableRefObject<ExpansionControl | null>;
+  /** Mounted but hidden (the search view or single-repo mode is on top):
+   *  suspend keyboard handling and the Esc-rung registration so the visible
+   *  view owns them — state (scroll/selection/expansion) is preserved. */
+  inactive?: boolean;
 }
 
 function formatFullTime(unixSeconds: number): string {
@@ -146,6 +150,7 @@ export function TimelineWindowed({
   searchScopeLabel,
   onWidenSearch,
   expansionControlRef,
+  inactive,
 }: Props) {
   const {
     rows,
@@ -351,8 +356,10 @@ export function TimelineWindowed({
 
   // Hand App's Esc cascade the collapse control (see ExpansionControl). Reads
   // through the live ref so the registration never has to re-run per keypress.
+  // Suspended while inactive — the visible view owns the rung; re-registers
+  // when this instance becomes the visible one again.
   useEffect(() => {
-    if (!expansionControlRef) return;
+    if (!expansionControlRef || inactive) return;
     expansionControlRef.current = {
       collapse: () => {
         if (expandedKeyRef.current == null) return false;
@@ -363,7 +370,7 @@ export function TimelineWindowed({
     return () => {
       expansionControlRef.current = null;
     };
-  }, [expansionControlRef]);
+  }, [expansionControlRef, inactive]);
 
   // `ref` for the open expansion's <li>: measure its height (it grows as
   // ChangedFiles loads in) and keep `expansionH` current. Called with null
@@ -484,8 +491,11 @@ export function TimelineWindowed({
     };
   }, [reloadLatest, reloadInPlace, countNew]);
 
-  // ----- keyboard nav (j / k / Enter / c / Esc) -----
+  // ----- keyboard nav (j / k / Enter / c) -----
   useEffect(() => {
+    // Hidden instance (search / single-repo on top): the visible view owns
+    // the keyboard.
+    if (inactive) return;
     function onKey(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null;
       // Typing fields AND focused interactive controls own their keys — an
@@ -542,6 +552,7 @@ export function TimelineWindowed({
     copyAiContext,
     searchMode,
     onWarp,
+    inactive,
   ]);
 
   // Hand the search bar its selection bridge — its input keeps keyboard
