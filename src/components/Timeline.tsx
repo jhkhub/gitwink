@@ -17,6 +17,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -351,6 +352,16 @@ export function Timeline({
     const result = await copyCommitAiContext(commit);
     setCopyStatus(result);
     setTimeout(() => setCopyStatus("idle"), result === "copied" ? 1500 : 2000);
+  }, []);
+
+  // Coarse clock tick so relative times ("3m") don't freeze on a pinned,
+  // idle panel (see TimelineWindowed for rationale).
+  const [, tickClock] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") tickClock();
+    }, 60_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const toggleExpand = useCallback((hash: string) => {

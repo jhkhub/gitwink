@@ -15,6 +15,7 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
@@ -330,6 +331,18 @@ export function TimelineWindowed({
     const result = await copyCommitAiContext(commit);
     setCopyStatus(result);
     setTimeout(() => setCopyStatus("idle"), result === "copied" ? 1500 : 2000);
+  }, []);
+
+  // Coarse clock tick so relative times ("3m") don't freeze on a pinned,
+  // idle panel — a freshness-glance tool must not claim "3m" an hour later.
+  // 60s matches the coarsest sub-hour unit; the virtualized list makes the
+  // re-render negligible; hidden windows skip (they re-render on show).
+  const [, tickClock] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "visible") tickClock();
+    }, 60_000);
+    return () => window.clearInterval(id);
   }, []);
 
   const toggleExpand = useCallback((key: string) => {
