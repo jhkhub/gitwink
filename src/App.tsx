@@ -182,6 +182,15 @@ function samePath(a: string, b: string): boolean {
 function App() {
   const [scanning, setScanning] = useState(false);
   const [commits, setCommits] = useState<CommitSummary[] | null>(null);
+  // True when the single-repo commits fetch itself FAILED (repo moved, drive
+  // disconnected) — distinct from a legitimately empty result, so the view
+  // can say "couldn't open" instead of silently keeping stale rows.
+  const [commitsError, setCommitsError] = useState(false);
+  // Signature of the view the current `commits` belong to. A SIGNATURE change
+  // (repo/branch/window/file scope) clears to the loading state so another
+  // repo's rows can never render under the new header; a plain refreshNonce
+  // re-pull keeps the rows (no flash).
+  const commitsSigRef = useRef("");
   const [allRepos, setAllRepos] = useState<Repo[]>([]);
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([]);
@@ -869,6 +878,18 @@ function App() {
   useEffect(() => {
     if (!singleMode || !selectedRepoPath) return;
     let cancelled = false;
+    // New view signature → drop the previous view's rows NOW ("Loading
+    // commits…"), so a failed fetch can never leave repo A's commits sitting
+    // under repo B's header. A same-signature re-pull (refreshNonce) keeps
+    // the rows to avoid a flash.
+    const sig = `${selectedRepoPath}|${JSON.stringify(selectedBranches)}|${windowDays}|${
+      fileHistory ? `file:${fileHistory.filePath}` : ""
+    }`;
+    if (commitsSigRef.current !== sig) {
+      commitsSigRef.current = sig;
+      setCommits(null);
+      setCommitsError(false);
+    }
     // File-history scope wins: show the commits that touched this file,
     // ignoring the (dimmed) branch / author / time lenses.
     if (fileHistory && fileHistory.repoPath === selectedRepoPath) {
@@ -898,8 +919,18 @@ function App() {
           branchParam,
           toWindowParam(windowDays),
         );
-        if (!cancelled) setCommits(cs);
-      } catch {}
+        if (!cancelled) {
+          setCommits(cs);
+          setCommitsError(false);
+        }
+      } catch {
+        // Repo unopenable (moved, disconnected drive) — an honest error
+        // state, never the previous repo's rows.
+        if (!cancelled) {
+          setCommits([]);
+          setCommitsError(true);
+        }
+      }
     })();
     return () => {
       cancelled = true;
@@ -1662,6 +1693,24 @@ function App() {
         ) : singleMode ? (
           filteredCommits == null ? (
             <p className="panel-empty">Loading commits…</p>
+          ) : commitsError ? (
+            // The repo itself couldn't be opened — say so instead of showing
+            // an empty (or worse, a stale) timeline under its name.
+            <div className="panel-empty">
+              <p className="panel-empty-line">
+                Couldn't open this repo — it may have moved or be on a
+                disconnected drive.
+              </p>
+              <p className="panel-empty-actions">
+                <button
+                  type="button"
+                  className="panel-empty-action"
+                  onClick={() => changeRepoPath(null)}
+                >
+                  Back to all repos
+                </button>
+              </p>
+            </div>
           ) : filteredCommits.length === 0 ? (
             fileHistory ? (
               // File-history mode owns its empty state — the time/author/

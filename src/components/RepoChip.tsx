@@ -346,7 +346,13 @@ function RepoItem({
       <button
         type="button"
         className="chip-item"
-        onClick={onSelect}
+        // A missing repo can't be opened — selecting it would only produce
+        // an error view, so the row is informational (tooltip explains how
+        // to relink) and ✕ hides it.
+        onClick={() => {
+          if (!isMissing) onSelect();
+        }}
+        aria-disabled={isMissing || undefined}
         title={
           isMissing
             ? `${repo.path} — moved or deleted on disk. Drop the new path on the panel to relink, or click ✕ to hide.`
