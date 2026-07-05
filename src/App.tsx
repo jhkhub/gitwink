@@ -1453,10 +1453,13 @@ function App() {
         onPointerDown={startDrag}
         onContextMenu={(e) => {
           const target = e.target as HTMLElement;
-          // Chips have their own dropdown behaviour; the close button is
-          // its own action. Right-click anywhere else on the header
-          // (empty space, drag handle, icon, status, badge) opens the menu.
-          if (target.closest(".chip-wrap, .panel-close")) return;
+          // Chips have their own dropdown behaviour, the close button is
+          // its own action, and an open context menu (the RepoChip row
+          // menu renders as a header child) owns right-clicks on itself.
+          // Right-click anywhere else on the header (empty space, drag
+          // handle, icon, status, badge) opens the menu.
+          if (target.closest(".chip-wrap, .panel-close, .context-menu"))
+            return;
           e.preventDefault();
           setHeaderCtxMenu({
             x: e.clientX,
@@ -1552,6 +1555,57 @@ function App() {
             onSelectAll={resetRepoScope}
             onTogglePin={togglePin}
             onHide={(path) => {
+              // Removal is not a navigation: widen any scope that
+              // references the repo IN PLACE — routing through
+              // changeRepoPath/changeRepoPaths would push the dying view
+              // into history, and Back would restore a repo that no
+              // longer exists. Scrub both history stacks for the same
+              // reason; surviving entries stay reachable.
+              if (
+                selectedRepoPath != null &&
+                samePath(selectedRepoPath, path)
+              ) {
+                setWarpAnchor(null);
+                setSelectedRepoPath(null);
+              }
+              if (
+                fileHistory != null &&
+                samePath(fileHistory.repoPath, path)
+              ) {
+                setFileHistory(null);
+              }
+              if (
+                Array.isArray(selectedRepoPaths) &&
+                selectedRepoPaths.some((p) => samePath(p, path))
+              ) {
+                const next = selectedRepoPaths.filter(
+                  (p) => !samePath(p, path),
+                );
+                setSelectedRepoPaths(next.length === 0 ? "all" : next);
+              }
+              const scrubViews = (views: ViewSnapshot[]) =>
+                views
+                  .filter(
+                    (v) =>
+                      !(v.repoPath != null && samePath(v.repoPath, path)) &&
+                      !(
+                        v.fileHistory != null &&
+                        samePath(v.fileHistory.repoPath, path)
+                      ),
+                  )
+                  .map((v) => {
+                    if (!Array.isArray(v.repoPaths)) return v;
+                    if (!v.repoPaths.some((p) => samePath(p, path))) return v;
+                    const rest = v.repoPaths.filter(
+                      (p) => !samePath(p, path),
+                    );
+                    return {
+                      ...v,
+                      repoPaths: rest.length === 0 ? ("all" as const) : rest,
+                    };
+                  });
+              setViewBack(scrubViews);
+              setViewFwd(scrubViews);
               // Optimistic: drop from local list immediately; backend
               // will tombstone so it stays gone across restarts. Claim
               // the path in the ref so the backend's 'removed' echo

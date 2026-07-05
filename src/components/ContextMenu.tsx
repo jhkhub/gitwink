@@ -5,6 +5,9 @@ export interface MenuItem {
   /** Accessible name override. Set when the visible label carries a
    *  decorative emoji a screen reader would otherwise announce. */
   ariaLabel?: string;
+  /** Muted second line under the label — for a consequence the label
+   *  shouldn't carry (e.g. "the folder on disk isn't touched"). */
+  hint?: string;
   onClick?: () => void;
   disabled?: boolean;
   divider?: boolean;
@@ -63,6 +66,9 @@ export function ContextMenu({ items, x, y, onClose }: Props) {
       className="context-menu"
       style={{ left: pos.x, top: pos.y }}
       onContextMenu={(e) => e.preventDefault()}
+      // A menu can render inside the draggable panel header (RepoChip's
+      // row menu) — a press on its padding must not start a window drag.
+      data-no-drag
     >
       {items.map((item, i) =>
         item.divider ? (
@@ -83,6 +89,9 @@ export function ContextMenu({ items, x, y, onClose }: Props) {
             }}
           >
             {item.label}
+            {item.hint && (
+              <span className="context-menu-hint">{item.hint}</span>
+            )}
           </button>
         ),
       )}

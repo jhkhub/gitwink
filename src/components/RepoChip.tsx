@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { Repo } from "../types";
 import { ChipDropdown } from "./ChipDropdown";
+import { ContextMenu } from "./ContextMenu";
 import { VirtualChipList, type VirtualChipRow } from "./VirtualChipList";
 import { chipRowH, useUiScale } from "../lib/settings";
 
@@ -52,8 +53,20 @@ export function RepoChip({
   const [query, setQuery] = useState("");
   const scale = useUiScale();
 
+  // Row context menu — "Remove from list" for any repo row. Rendered as a
+  // sibling of the dropdown (position: fixed) so the dropdown's occasional
+  // edge-nudge transform can't hijack its coordinate space.
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    path: string;
+  } | null>(null);
+
   useEffect(() => {
-    if (!open) setQuery("");
+    if (!open) {
+      setQuery("");
+      setCtxMenu(null);
+    }
   }, [open]);
 
   // Snapshot of `pinned` taken when the dropdown opens. Section
@@ -201,6 +214,7 @@ export function RepoChip({
           }}
           onPin={() => onTogglePin(r.path)}
           onHide={() => onHide(r.path)}
+          onRowContextMenu={(x, y) => setCtxMenu({ x, y, path: r.path })}
         />
       ),
     });
@@ -262,24 +276,40 @@ export function RepoChip({
   ]);
 
   return (
-    <ChipDropdown
-      id="repo"
-      label={label}
-      open={open}
-      onToggle={onToggle}
-      onClose={onClose}
-      active={selectedPath != null || selectedPaths !== "all"}
-    >
-      <div className="chip-search">
-        <input
-          autoFocus
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search repos…"
+    <>
+      <ChipDropdown
+        id="repo"
+        label={label}
+        open={open}
+        onToggle={onToggle}
+        onClose={onClose}
+        active={selectedPath != null || selectedPaths !== "all"}
+      >
+        <div className="chip-search">
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search repos…"
+          />
+        </div>
+        <VirtualChipList rows={rows} resetKey={query} />
+      </ChipDropdown>
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={[
+            {
+              label: "Remove from list",
+              hint: "The folder on disk isn't touched — drop it back to re-add",
+              onClick: () => onHide(ctxMenu.path),
+            },
+          ]}
+          onClose={() => setCtxMenu(null)}
         />
-      </div>
-      <VirtualChipList rows={rows} resetKey={query} />
-    </ChipDropdown>
+      )}
+    </>
   );
 }
 
@@ -294,6 +324,7 @@ function RepoItem({
   onToggleSelect,
   onPin,
   onHide,
+  onRowContextMenu,
 }: {
   repo: Repo;
   /** commit count in the active window, or undefined when the repo has
@@ -307,6 +338,7 @@ function RepoItem({
   onToggleSelect: () => void;
   onPin: () => void;
   onHide: () => void;
+  onRowContextMenu: (x: number, y: number) => void;
 }) {
   const isMissing = repo.status === "missing";
   return (
@@ -317,6 +349,10 @@ function RepoItem({
         (isMissing ? " missing" : "") +
         (selected ? " selected" : "")
       }
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onRowContextMenu(e.clientX, e.clientY);
+      }}
     >
       <button
         type="button"
@@ -352,14 +388,14 @@ function RepoItem({
         className="chip-item"
         // A missing repo can't be opened — selecting it would only produce
         // an error view, so the row is informational (tooltip explains how
-        // to relink) and ✕ hides it.
+        // to relink) and ✕ removes it.
         onClick={() => {
           if (!isMissing) onSelect();
         }}
         aria-disabled={isMissing || undefined}
         title={
           isMissing
-            ? `${repo.path} — moved or deleted on disk. Drop the new path on the panel to relink, or click ✕ to hide.`
+            ? `${repo.path} — moved or deleted on disk. Drop the new path on the panel to relink, or click ✕ to remove it from the list.`
             : repo.path
         }
       >
@@ -384,7 +420,7 @@ function RepoItem({
             e.stopPropagation();
             onHide();
           }}
-          title="Hide this repo (won't auto-rediscover)"
+          title="Remove from list (won't auto-rediscover)"
         >
           ✕
         </button>

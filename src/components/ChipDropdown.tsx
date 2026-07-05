@@ -41,7 +41,12 @@ export function ChipDropdown({
     if (!open) return;
     function handler(e: MouseEvent) {
       if (!ref.current) return;
-      if (!ref.current.contains(e.target as Node)) onClose();
+      if (ref.current.contains(e.target as Node)) return;
+      // A context menu spawned from a row in this dropdown renders as a
+      // fixed overlay OUTSIDE the chip subtree (so the dropdown's edge-nudge
+      // transform can't skew it) — clicking it is not an outside click.
+      if ((e.target as HTMLElement | null)?.closest?.(".context-menu")) return;
+      onClose();
     }
     function key(e: KeyboardEvent) {
       // The Esc that cancels an IME composition (in the chip's search input)
@@ -51,6 +56,9 @@ export function ChipDropdown({
         // The update modal is the topmost layer — it must win Esc even if a
         // dropdown was left open beneath it.
         if (document.querySelector(".update-modal")) return;
+        // Same for an open context menu: it closes itself on Esc, and one
+        // Esc = one layer — the dropdown waits for the next one.
+        if (document.querySelector(".context-menu")) return;
         onClose();
         // One Esc = one layer: without this, the same keypress fell through
         // to App's cascade and ALSO collapsed the open commit expansion —

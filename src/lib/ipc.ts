@@ -103,9 +103,10 @@ export async function explicitAddRepo(path: string): Promise<DiscoveredRepo> {
   return invoke<DiscoveredRepo>("explicit_add_repo", { path });
 }
 
-/** Hide a repo from the panel and prevent auto-rediscovery. Used by
- * the "hide" affordance on missing rows in the RepoChip. The user can
- * always bring it back by dropping/pasting the path again. */
+/** Hide a repo from the panel and prevent auto-rediscovery. Entry
+ * points: the ✕ on missing rows and the row context menu's "Remove
+ * from list" in the RepoChip. The user can always bring it back by
+ * dropping/pasting the path again. */
 export async function hideRepo(canonicalPath: string): Promise<void> {
   await invoke("hide_repo", { canonicalPath });
 }

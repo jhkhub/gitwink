@@ -2033,6 +2033,17 @@ body,
   cursor: not-allowed;
 }
 
+.context-menu-hint {
+  display: block;
+  margin-top: 1px;
+  font-size: 10px;
+  opacity: 0.55;
+  /* Cap the hint, not the menu — a long consequence line wraps instead of
+     stretching the whole menu into one wide row. */
+  max-width: 230px;
+  white-space: normal;
+}
+
 @media (prefers-color-scheme: dark) {
   .context-menu-item:hover:not(.disabled) {
     background: rgba(140, 180, 255, 0.22);
