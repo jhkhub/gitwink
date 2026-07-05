@@ -172,12 +172,16 @@ interface ViewSnapshot {
  *  in practice, bounded so a long session can't grow it without limit. */
 const VIEW_HISTORY_MAX = 50;
 
+/** Normalized form behind samePath — also the key format for path Sets. */
+function repoPathKey(p: string): string {
+  return p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
 /** Tolerant repo-path equality: the backend's cache key and the frontend's
  *  selected path can differ in separator (\ vs /) or case on Windows. */
 function samePath(a: string, b: string): boolean {
   if (a === b) return true;
-  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-  return norm(a) === norm(b);
+  return repoPathKey(a) === repoPathKey(b);
 }
 
 /** Set-equality for the RepoChip's multi-selection ("all" or a path list). */
@@ -208,6 +212,16 @@ function App() {
   const commitsRefsFpRef = useRef<string | null>(null);
   const [allRepos, setAllRepos] = useState<Repo[]>([]);
   const [discoveredCount, setDiscoveredCount] = useState<number | null>(null);
+  // Paths currently in allRepos (repoPathKey-normalized), readable from
+  // event listeners without a stale closure. The repo-discovered handler
+  // must decide "is this repo actually new?" OUTSIDE its setAllRepos
+  // updater (updaters must stay side-effect-free under StrictMode), and
+  // re-adding an existing repo re-emits the event — counting those
+  // inflated discoveredCount.
+  const knownRepoPathsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    knownRepoPathsRef.current = new Set(allRepos.map((r) => repoPathKey(r.path)));
+  }, [allRepos]);
   const [pinnedRepos, setPinnedRepos] = useState<string[]>([]);
   // All-repos filter facets — the windowed timeline keeps no full client-
   // side commit array, so the AuthorsChip list + the RepoChip per-repo
@@ -563,8 +577,14 @@ function App() {
       // the newly-discovered repo without a manual reload.
       unDiscovered = await onRepoDiscovered((p) => {
         if (!mounted) return;
+        // Manual re-add of an already-listed repo re-emits this event
+        // (the backend add is an idempotent upsert). Bail before touching
+        // discoveredCount, or the displayed total inflates by one per
+        // re-add while the deduped list stays the same size.
+        if (knownRepoPathsRef.current.has(repoPathKey(p.path))) return;
+        knownRepoPathsRef.current.add(repoPathKey(p.path));
         setAllRepos((prev) => {
-          if (prev.some((r) => r.path === p.path)) return prev;
+          if (prev.some((r) => samePath(r.path, p.path))) return prev;
           // Orchestrator only emits for validated repos, so status='active'
           // is correct on insert. The id is unknown until the scan-complete
           // listRepos() refresh backfills it — harmless, the windowed
@@ -591,7 +611,15 @@ function App() {
           if (!mounted) return;
           const { canonicalPath, status } = e.payload;
           if (status === "removed") {
-            setAllRepos((prev) => prev.filter((r) => r.path !== canonicalPath));
+            // A user-initiated hide already dropped this path optimistically
+            // (onHide below) before the backend echoed 'removed' — without
+            // this guard the count decrements twice per hide. delete()
+            // returns false when the path is already gone.
+            if (!knownRepoPathsRef.current.delete(repoPathKey(canonicalPath)))
+              return;
+            setAllRepos((prev) =>
+              prev.filter((r) => !samePath(r.path, canonicalPath)),
+            );
             setDiscoveredCount((prev) =>
               prev != null ? Math.max(0, prev - 1) : prev,
             );
@@ -1023,8 +1051,9 @@ function App() {
       // registration, so a user-initiated add must not depend on it.
       // The onRepoDiscovered listener dedups by path, so a later event
       // for the same repo is harmless.
+      knownRepoPathsRef.current.add(repoPathKey(repo.path));
       setAllRepos((prev) => {
-        if (prev.some((r) => r.path === repo.path)) return prev;
+        if (prev.some((r) => samePath(r.path, repo.path))) return prev;
         const next = [
           ...prev,
           { id: 0, path: repo.path, name: repo.name, status: "active" as const },
@@ -1033,9 +1062,15 @@ function App() {
         return next;
       });
       // Refresh so the new repo carries its real id — the windowed timeline
-      // filters by id, not path.
+      // filters by id, not path. Re-sync discoveredCount from the same
+      // source of truth: depending on event/command ordering the listener
+      // may have skipped the +1 (path already known via the direct insert
+      // above), and a re-add must not change the total at all.
       void listRepos()
-        .then((repos) => setAllRepos(repos))
+        .then((repos) => {
+          setAllRepos(repos);
+          setDiscoveredCount(repos.length);
+        })
         .catch(() => {});
       setAddError(null);
       return true;
@@ -1518,15 +1553,25 @@ function App() {
             onTogglePin={togglePin}
             onHide={(path) => {
               // Optimistic: drop from local list immediately; backend
-              // will tombstone so it stays gone across restarts.
-              setAllRepos((prev) => prev.filter((r) => r.path !== path));
-              setDiscoveredCount((prev) =>
-                prev != null ? Math.max(0, prev - 1) : prev,
-              );
+              // will tombstone so it stays gone across restarts. Claim
+              // the path in the ref so the backend's 'removed' echo
+              // doesn't decrement the count a second time.
+              if (knownRepoPathsRef.current.delete(repoPathKey(path))) {
+                setAllRepos((prev) =>
+                  prev.filter((r) => !samePath(r.path, path)),
+                );
+                setDiscoveredCount((prev) =>
+                  prev != null ? Math.max(0, prev - 1) : prev,
+                );
+              }
               void hideRepo(path).catch(() => {
                 // If the backend rejects (race / already gone), fall
-                // back to re-fetching the list so UI matches truth.
-                void listRepos().then((r) => setAllRepos(r));
+                // back to re-fetching the list AND the count so UI
+                // matches truth (the optimistic -1 above was wrong).
+                void listRepos().then((r) => {
+                  setAllRepos(r);
+                  setDiscoveredCount(r.length);
+                });
               });
             }}
             totalRepoCount={repoCount}
